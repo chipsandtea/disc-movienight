@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const movies = sqliteTable('movies', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -16,24 +16,36 @@ export const movies = sqliteTable('movies', {
   watchedAt: text('watched_at'),
 });
 
-export const attendance = sqliteTable('attendance', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  movieId: integer('movie_id').notNull().references(() => movies.id, { onDelete: 'cascade' }),
-  userId: text('user_id').notNull(),
-  userName: text('user_name').notNull(),
-  createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
-});
+export const attendance = sqliteTable(
+  'attendance',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    movieId: integer('movie_id').notNull().references(() => movies.id, { onDelete: 'cascade' }),
+    userId: text('user_id').notNull(),
+    userName: text('user_name').notNull(),
+    createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
+  },
+  table => ({
+    movieUserIdx: uniqueIndex('idx_attendance_movie_user').on(table.movieId, table.userId),
+  })
+);
 
-export const ratings = sqliteTable('ratings', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  movieId: integer('movie_id').notNull().references(() => movies.id, { onDelete: 'cascade' }),
-  userId: text('user_id').notNull(),
-  userName: text('user_name').notNull(),
-  rating: real('rating').notNull(),
-  reviewText: text('review_text'),
-  submittedAt: text('submitted_at').notNull().$defaultFn(() => new Date().toISOString()),
-  updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
-});
+export const ratings = sqliteTable(
+  'ratings',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    movieId: integer('movie_id').notNull().references(() => movies.id, { onDelete: 'cascade' }),
+    userId: text('user_id').notNull(),
+    userName: text('user_name').notNull(),
+    rating: real('rating').notNull(),
+    reviewText: text('review_text'),
+    submittedAt: text('submitted_at').notNull().$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
+  },
+  table => ({
+    movieUserIdx: uniqueIndex('idx_ratings_movie_user').on(table.movieId, table.userId),
+  })
+);
 
 export const schedulingSessions = sqliteTable('scheduling_sessions', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -47,14 +59,20 @@ export const schedulingSessions = sqliteTable('scheduling_sessions', {
   createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
 });
 
-export const availabilityVotes = sqliteTable('availability_votes', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  sessionId: integer('session_id').notNull().references(() => schedulingSessions.id, { onDelete: 'cascade' }),
-  userId: text('user_id').notNull(),
-  userName: text('user_name').notNull(),
-  selectedDays: text('selected_days').notNull(), // JSON array string e.g. '["Friday"]'
-  updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
-});
+export const availabilityVotes = sqliteTable(
+  'availability_votes',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    sessionId: integer('session_id').notNull().references(() => schedulingSessions.id, { onDelete: 'cascade' }),
+    userId: text('user_id').notNull(),
+    userName: text('user_name').notNull(),
+    selectedDays: text('selected_days').notNull(), // JSON array string e.g. '["Friday"]'
+    updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
+  },
+  table => ({
+    sessionUserIdx: uniqueIndex('idx_votes_session_user').on(table.sessionId, table.userId),
+  })
+);
 
 export type Movie = typeof movies.$inferSelect;
 export type NewMovie = typeof movies.$inferInsert;

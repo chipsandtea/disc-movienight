@@ -88,6 +88,21 @@ export async function recordUserRating(
   score: number,
   reviewText?: string
 ): Promise<{ isUpdate: boolean; rating: Rating }> {
+  // Ensure user is recorded in attendance table
+  const existingAttendance = await db
+    .select()
+    .from(attendance)
+    .where(and(eq(attendance.movieId, movieId), eq(attendance.userId, userId)))
+    .limit(1);
+
+  if (existingAttendance.length === 0) {
+    await db.insert(attendance).values({
+      movieId,
+      userId,
+      userName,
+    }).catch(() => {});
+  }
+
   const existing = await db
     .select()
     .from(ratings)

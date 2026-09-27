@@ -69,6 +69,11 @@ export async function startAttendanceConfirmation(
     .setMinValues(0)
     .setMaxValues(25);
 
+  const initialUserIds = Array.from(attendeeMap.keys()).slice(0, 25);
+  if (initialUserIds.length > 0) {
+    userSelect.setDefaultUsers(initialUserIds);
+  }
+
   const selectRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(userSelect);
 
   const reply = await interaction.reply({

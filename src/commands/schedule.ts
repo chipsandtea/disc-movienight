@@ -161,16 +161,30 @@ export const scheduleCommand = {
           const targetDate = new Date(now.getTime() + 24 * 60 * 60 * 1000 * 2); // default 2 days out
           const eventTitle = plannedMovie ? `🎬 Movie Night: ${plannedMovie.title}` : '🎬 Weekly Movie Night';
 
-          await interaction.guild.scheduledEvents.create({
+          const voiceChannel = interaction.guild.channels.cache.find(c => c.isVoiceBased());
+          const entityType = voiceChannel
+            ? GuildScheduledEventEntityType.Voice
+            : GuildScheduledEventEntityType.External;
+
+          const eventPayload: any = {
             name: eventTitle,
             scheduledStartTime: targetDate,
             privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
-            entityType: GuildScheduledEventEntityType.Voice,
-            channel: interaction.guild.channels.cache.find(c => c.isVoiceBased())?.id || undefined,
+            entityType,
             description: plannedMovie
               ? `Watching ${plannedMovie.title} (${plannedMovie.releaseYear || ''}). Runtime: ${plannedMovie.runtimeMinutes || 'N/A'} mins.`
               : 'Weekly Movie Night with friends!',
-          });
+          };
+
+          if (voiceChannel) {
+            eventPayload.channel = voiceChannel.id;
+          } else {
+            // External events require an end time and location metadata
+            eventPayload.scheduledEndTime = new Date(targetDate.getTime() + 3 * 60 * 60 * 1000);
+            eventPayload.entityMetadata = { location: 'Movie Voice Channel' };
+          }
+
+          await interaction.guild.scheduledEvents.create(eventPayload);
           eventNotice = '\n📅 *Native Discord Scheduled Event created!*';
         } catch (err: any) {
           console.warn('[Schedule] Could not create Discord Scheduled Event:', err.message);

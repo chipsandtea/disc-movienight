@@ -69,12 +69,27 @@ export async function initDatabase() {
     );
   `);
 
+  await rawClient.execute(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_movie_user ON attendance(movie_id, user_id);
+  `);
+
+  await rawClient.execute(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ratings_movie_user ON ratings(movie_id, user_id);
+  `);
+
+  await rawClient.execute(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_votes_session_user ON availability_votes(session_id, user_id);
+  `);
+
   console.log('[DB] Database tables verified successfully.');
 }
 
-initDatabase().then(() => {
-  console.log('[DB] Migration complete.');
-}).catch(err => {
-  console.error('[DB] Migration failed:', err);
-  process.exit(1);
-});
+if (process.argv[1] && (process.argv[1].endsWith('migrate.ts') || process.argv[1].endsWith('migrate.js'))) {
+  initDatabase().then(() => {
+    console.log('[DB] Migration complete.');
+    process.exit(0);
+  }).catch(err => {
+    console.error('[DB] Migration failed:', err);
+    process.exit(1);
+  });
+}

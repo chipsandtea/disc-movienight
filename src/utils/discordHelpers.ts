@@ -1,6 +1,17 @@
-import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Guild, TextChannel } from 'discord.js';
 import { Movie } from '../db/schema.js';
 import { WatchedMovieSummary, UserStatsResult } from '../services/movie.service.js';
+
+/**
+ * Resolves the configured movie channel by snowflake ID, name, or #name (case-insensitive).
+ */
+export function resolveMovieChannel(guild?: Guild | null, configured?: string): TextChannel | undefined {
+  if (!guild || !configured) return undefined;
+  const clean = configured.replace(/^#/, '').trim().toLowerCase();
+  return guild.channels.cache.find(
+    c => (c.id === configured || c.name.toLowerCase() === clean) && c.isTextBased()
+  ) as TextChannel | undefined;
+}
 
 /**
  * Converts minutes into a friendly string like "2h 16m".
@@ -143,24 +154,40 @@ export function buildRevealEmbed(
     });
   }
 
-  // Individual Reviews
+  // Individual Reviews (Chunked to respect Discord 1024-char field limit)
   if (submittedRatings.length > 0) {
-    const reviewLines = submittedRatings.map(r => {
-      const reviewPart = r.reviewText ? `\n> *"${r.reviewText}"*` : '';
-      return `• <@${r.userId}>: **${r.rating} / 10**${reviewPart}`;
-    });
+    const reviewBlocks: string[] = [];
+    let currentBlock = '';
 
-    embed.addFields({
-      name: `💬 Member Ratings & Reviews (${submittedRatings.length})`,
-      value: reviewLines.join('\n\n'),
-      inline: false,
+    for (const r of submittedRatings) {
+      const truncatedReview = r.reviewText && r.reviewText.length > 500
+        ? `${r.reviewText.slice(0, 497)}...`
+        : r.reviewText;
+      const reviewPart = truncatedReview ? `\n> *"${truncatedReview}"*` : '';
+      const line = `• <@${r.userId}>: **${r.rating} / 10**${reviewPart}`;
+
+      if (currentBlock.length + line.length + 2 > 950) {
+        reviewBlocks.push(currentBlock);
+        currentBlock = line;
+      } else {
+        currentBlock = currentBlock ? `${currentBlock}\n\n${line}` : line;
+      }
+    }
+    if (currentBlock) reviewBlocks.push(currentBlock);
+
+    reviewBlocks.forEach((block, index) => {
+      const title = reviewBlocks.length > 1
+        ? `💬 Member Ratings & Reviews (${index + 1}/${reviewBlocks.length})`
+        : `💬 Member Ratings & Reviews (${submittedRatings.length})`;
+      embed.addFields({ name: title, value: block, inline: false });
     });
   }
 
   if (unratedAttendees.length > 0) {
+    const unratedList = unratedAttendees.map(u => `<@${u.userId}>`).join(', ');
     embed.addFields({
       name: '💤 Attended Without Review',
-      value: unratedAttendees.map(u => `<@${u.userId}>`).join(', '),
+      value: unratedList.length > 1000 ? `${unratedList.slice(0, 997)}...` : unratedList,
       inline: false,
     });
   }

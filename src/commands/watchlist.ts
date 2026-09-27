@@ -10,7 +10,7 @@ import { formatWheelExport } from '../utils/wheelHelper.js';
 import { formatRuntime } from '../utils/discordHelpers.js';
 import { db } from '../db/client.js';
 import { movies } from '../db/schema.js';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, or } from 'drizzle-orm';
 
 export const watchlistCommand = {
   data: new SlashCommandBuilder()
@@ -69,10 +69,14 @@ export const watchlistCommand = {
 
     if (subcommand === 'view') {
       const filter = interaction.options.getString('filter') || 'backlog';
+      const statusCondition = filter === 'backlog'
+        ? or(eq(movies.status, 'backlog'), eq(movies.status, 'planned'))
+        : eq(movies.status, 'watched');
+
       const movieList = await db
         .select()
         .from(movies)
-        .where(eq(movies.status, filter as any))
+        .where(statusCondition)
         .orderBy(desc(movies.createdAt))
         .limit(20);
 
@@ -84,15 +88,20 @@ export const watchlistCommand = {
         return;
       }
 
+      // Sort planned movies to the very top if in backlog view
+      if (filter === 'backlog') {
+        movieList.sort((a, b) => (b.status === 'planned' ? 1 : 0) - (a.status === 'planned' ? 1 : 0));
+      }
+
       const embed = new EmbedBuilder()
         .setTitle(filter === 'backlog' ? '📋 Movie Night Watchlist (Backlog)' : '🍿 Past Watched Movies')
         .setColor(filter === 'backlog' ? 0x3B82F6 : 0x10B981)
         .setDescription(
           movieList
-            .map(
-              (m, idx) =>
-                `**${idx + 1}. [${m.title}](https://www.imdb.com/title/${m.imdbId || ''})** (${m.releaseYear || 'N/A'})\n⏱ ${formatRuntime(m.runtimeMinutes)} • Suggested by <@${m.suggestedByUserId}>`
-            )
+            .map((m, idx) => {
+              const badge = m.status === 'planned' ? ' 🎯 `[PLANNED NEXT]`' : '';
+              return `**${idx + 1}. [${m.title}](https://www.imdb.com/title/${m.imdbId || ''})** (${m.releaseYear || 'N/A'})${badge}\n⏱ ${formatRuntime(m.runtimeMinutes)} • Suggested by <@${m.suggestedByUserId}>`;
+            })
             .join('\n\n')
         )
         .setFooter({ text: `Showing up to 20 entries • Total in list: ${movieList.length}` });

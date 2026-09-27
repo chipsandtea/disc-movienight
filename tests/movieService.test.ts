@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { initDatabase } from '../src/db/migrate.js';
 import {
   addMovieToBacklog,
@@ -19,21 +20,22 @@ describe('Movie Service & Rating Lifecycle', () => {
 
   it('adds movie, handles duplicates, records attendance and ratings, and calculates user recommendation stats', async () => {
     // 1. Add movie to backlog
+    const testTmdbId = Math.floor(Date.now() / 1000) + Math.floor(Math.random() * 10000);
     const movieDetails = {
-      id: 999999,
-      title: 'Test Sci-Fi Feature',
+      id: testTmdbId,
+      title: `Test Sci-Fi Feature ${testTmdbId}`,
       releaseYear: 2025,
       runtimeMinutes: 125,
       overview: 'A test film about space exploration.',
       posterUrl: 'https://example.com/poster.jpg',
-      imdbId: 'tt9999999',
-      tmdbUrl: 'https://themoviedb.org/movie/999999',
-      imdbUrl: 'https://imdb.com/title/tt9999999/',
+      imdbId: `tt${testTmdbId}`,
+      tmdbUrl: `https://themoviedb.org/movie/${testTmdbId}`,
+      imdbUrl: `https://imdb.com/title/tt${testTmdbId}/`,
     };
 
     const addResult = await addMovieToBacklog(movieDetails, 'user_alice', 'Alice');
     expect(addResult.status).toBe('added');
-    expect(addResult.movie.title).toBe('Test Sci-Fi Feature');
+    expect(addResult.movie.title).toBe(movieDetails.title);
 
     // 2. Duplicate check on backlog
     const dupResult = await addMovieToBacklog(movieDetails, 'user_bob', 'Bob');
@@ -77,5 +79,23 @@ describe('Movie Service & Rating Lifecycle', () => {
     const found = leaderboard.find(l => l.movie.id === addResult.movie.id);
     expect(found).toBeDefined();
     expect(found?.averageRating).toBe(8.5);
+
+    // 9. Test rewatch capability
+    // Attempting to re-add without rewatch flag should warn
+    const duplicateWatched = await addMovieToBacklog(movieDetails, 'user_dave', 'Dave', false);
+    expect(duplicateWatched.status).toBe('already_watched');
+    expect(duplicateWatched.pastScore).toBe(8.5);
+
+    // Re-adding with allowRewatch=true should succeed and reactivate as backlog without unique constraint error
+    const rewatchResult = await addMovieToBacklog(movieDetails, 'user_dave', 'Dave', true);
+    expect(rewatchResult.status).toBe('added');
+    expect(rewatchResult.movie.status).toBe('backlog');
+
+    // 10. Test auto-attendance when submitting a rating
+    await recordUserRating(addResult.movie.id, 'user_late_joiner', 'Late Joiner', 7.0);
+    const attendeesUpdated = await db.select().from(attendance).where(eq(attendance.movieId, addResult.movie.id));
+    const lateJoinerFound = attendeesUpdated.find(a => a.userId === 'user_late_joiner');
+    expect(lateJoinerFound).toBeDefined();
+    expect(lateJoinerFound?.userName).toBe('Late Joiner');
   });
 });

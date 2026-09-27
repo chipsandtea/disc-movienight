@@ -1,8 +1,8 @@
-import { eq } from 'drizzle-orm';
+import { eq, or, desc } from 'drizzle-orm';
 import { VoiceBasedChannel } from 'discord.js';
 import { db } from '../db/client.js';
-import { attendance, Attendance } from '../db/schema.js';
-import { getActiveSchedulingSession, getSessionVotes } from './schedule.service.js';
+import { attendance, Attendance, schedulingSessions } from '../db/schema.js';
+import { getSessionVotes } from './schedule.service.js';
 
 export interface CandidateAttendee {
   userId: string;
@@ -12,7 +12,7 @@ export interface CandidateAttendee {
 
 /**
  * Discovers potential movie attendees by inspecting the current voice channel
- * and cross-referencing voters from the scheduling session.
+ * and cross-referencing voters from the active or finalized scheduling session.
  */
 export async function detectPotentialAttendees(
   voiceChannel?: VoiceBasedChannel | null
@@ -33,7 +33,14 @@ export async function detectPotentialAttendees(
   }
 
   // 2. Check active or recently finalized scheduling session
-  const session = await getActiveSchedulingSession();
+  const sessions = await db
+    .select()
+    .from(schedulingSessions)
+    .where(or(eq(schedulingSessions.status, 'active'), eq(schedulingSessions.status, 'finalized')))
+    .orderBy(desc(schedulingSessions.createdAt))
+    .limit(1);
+
+  const session = sessions[0] || null;
   if (session) {
     const votes = await getSessionVotes(session.id);
     for (const v of votes) {

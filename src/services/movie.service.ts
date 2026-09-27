@@ -48,21 +48,40 @@ export async function addMovieToBacklog(
 
   if (existing.length > 0) {
     const movie = existing[0];
-    if (movie.status === 'watched' && !allowRewatch) {
-      // Calculate past group average rating
-      const movieRatings = await db
-        .select({ rating: ratings.rating })
-        .from(ratings)
-        .where(eq(ratings.movieId, movie.id));
+    if (movie.status === 'watched') {
+      if (!allowRewatch) {
+        // Calculate past group average rating
+        const movieRatings = await db
+          .select({ rating: ratings.rating })
+          .from(ratings)
+          .where(eq(ratings.movieId, movie.id));
 
-      const avg = movieRatings.length > 0
-        ? movieRatings.reduce((sum, r) => sum + r.rating, 0) / movieRatings.length
-        : null;
+        const avg = movieRatings.length > 0
+          ? movieRatings.reduce((sum, r) => sum + r.rating, 0) / movieRatings.length
+          : null;
+
+        return {
+          status: 'already_watched',
+          movie,
+          pastScore: avg ? Math.round(avg * 10) / 10 : null,
+        };
+      }
+
+      // Re-activate as backlog for re-watch
+      const [updated] = await db
+        .update(movies)
+        .set({
+          status: 'backlog',
+          watchedAt: null,
+          suggestedByUserId,
+          suggestedByUsername,
+        })
+        .where(eq(movies.id, movie.id))
+        .returning();
 
       return {
-        status: 'already_watched',
-        movie,
-        pastScore: avg ? Math.round(avg * 10) / 10 : null,
+        status: 'added',
+        movie: updated,
       };
     }
 
@@ -270,30 +289,36 @@ export async function getLeaderboard(): Promise<WatchedMovieSummary[]> {
     .where(eq(movies.status, 'watched'))
     .orderBy(desc(movies.watchedAt));
 
-  const summaries: WatchedMovieSummary[] = [];
+  if (watched.length === 0) return [];
 
-  for (const movie of watched) {
-    const movieRatings = await db
-      .select({ rating: ratings.rating })
-      .from(ratings)
-      .where(eq(ratings.movieId, movie.id));
+  const allRatings = await db.select().from(ratings);
+  const allAttendance = await db.select().from(attendance);
 
-    const movieAttendance = await db
-      .select()
-      .from(attendance)
-      .where(eq(attendance.movieId, movie.id));
+  const ratingsByMovie = new Map<number, number[]>();
+  for (const r of allRatings) {
+    const list = ratingsByMovie.get(r.movieId) || [];
+    list.push(r.rating);
+    ratingsByMovie.set(r.movieId, list);
+  }
 
+  const attendanceCountByMovie = new Map<number, number>();
+  for (const a of allAttendance) {
+    attendanceCountByMovie.set(a.movieId, (attendanceCountByMovie.get(a.movieId) || 0) + 1);
+  }
+
+  const summaries: WatchedMovieSummary[] = watched.map(movie => {
+    const movieRatings = ratingsByMovie.get(movie.id) || [];
     const avg = movieRatings.length > 0
-      ? Math.round((movieRatings.reduce((sum, r) => sum + r.rating, 0) / movieRatings.length) * 100) / 100
+      ? Math.round((movieRatings.reduce((sum, r) => sum + r, 0) / movieRatings.length) * 100) / 100
       : null;
 
-    summaries.push({
+    return {
       movie,
       averageRating: avg,
       ratingCount: movieRatings.length,
-      attendanceCount: movieAttendance.length,
-    });
-  }
+      attendanceCount: attendanceCountByMovie.get(movie.id) || 0,
+    };
+  });
 
   // Sort by average rating descending, then ratingCount descending
   return summaries.sort((a, b) => {

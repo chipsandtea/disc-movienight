@@ -2,12 +2,10 @@ import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
   AutocompleteInteraction,
-  TextChannel,
 } from 'discord.js';
 import { searchMovies, getMovieDetails, findByImdbId, extractImdbId } from '../services/tmdb.service.js';
 import { addMovieToBacklog } from '../services/movie.service.js';
 import { buildMovieEmbed } from '../utils/discordHelpers.js';
-import { config } from '../config.js';
 
 export const suggestCommand = {
   data: new SlashCommandBuilder()
@@ -48,7 +46,7 @@ export const suggestCommand = {
       const label = `${m.title} (${year})`.slice(0, 100);
       return {
         name: label,
-        value: String(m.id),
+        value: `tmdb:${m.id}`,
       };
     });
 
@@ -66,13 +64,17 @@ export const suggestCommand = {
 
     if (imdbId) {
       details = await findByImdbId(imdbId);
-    } else if (/^\d+$/.test(input.trim())) {
-      details = await getMovieDetails(input.trim());
+    } else if (input.startsWith('tmdb:')) {
+      const tmdbId = input.replace('tmdb:', '').trim();
+      details = await getMovieDetails(tmdbId);
     } else {
-      // If user typed free text without selecting autocomplete
+      // User typed free text (including numeric titles like "1917" or "300")
       const searchResults = await searchMovies(input);
       if (searchResults.length > 0) {
         details = await getMovieDetails(searchResults[0].id);
+      } else if (/^\d+$/.test(input.trim())) {
+        // Fallback to TMDB ID if text search returned nothing
+        details = await getMovieDetails(input.trim());
       }
     }
 

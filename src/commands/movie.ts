@@ -13,12 +13,13 @@ import {
   getRandomBacklogMovies,
   getUserStats,
   getLeaderboard,
+  addMovieToBacklog,
 } from '../services/movie.service.js';
 import { detectPotentialAttendees } from '../services/attendance.service.js';
 import { getRatingProgress, finalizeMovieRatings } from '../services/rating.service.js';
 import { startAttendanceConfirmation } from '../components/attendanceModal.js';
-import { buildMovieEmbed, buildRevealEmbed, buildUserStatsEmbed, formatRuntime } from '../utils/discordHelpers.js';
-import { extractImdbId, findByImdbId } from '../services/tmdb.service.js';
+import { buildMovieEmbed, buildRevealEmbed, buildUserStatsEmbed, formatRuntime, resolveMovieChannel } from '../utils/discordHelpers.js';
+import { extractImdbId, findByImdbId, getMovieDetails } from '../services/tmdb.service.js';
 import { config } from '../config.js';
 
 export const movieCommand = {
@@ -118,18 +119,29 @@ export const movieCommand = {
       if (/^\d+$/.test(input.trim())) {
         targetMovieId = parseInt(input.trim(), 10);
       } else {
+        let details = null;
         const imdbId = extractImdbId(input);
+        const tmdbMatch = input.match(/themoviedb\.org\/movie\/(\d+)/i);
+
         if (imdbId) {
-          const details = await findByImdbId(imdbId);
-          if (details) {
-            targetMovieId = details.id;
-          }
+          details = await findByImdbId(imdbId);
+        } else if (tmdbMatch) {
+          details = await getMovieDetails(tmdbMatch[1]);
+        }
+
+        if (details) {
+          const userName = interaction.member && 'displayName' in interaction.member
+            ? (interaction.member.displayName as string)
+            : interaction.user.username;
+
+          const addResult = await addMovieToBacklog(details, interaction.user.id, userName, true);
+          targetMovieId = addResult.movie.id;
         }
       }
 
       if (!targetMovieId) {
         await interaction.reply({
-          content: '❌ Could not find that movie. Please pick an option from the autocomplete list or provide a valid ID.',
+          content: '❌ Could not find that movie. Please pick an option from the autocomplete list or provide a valid IMDb URL / ID.',
           ephemeral: true,
         });
         return;
@@ -210,9 +222,7 @@ export const movieCommand = {
       const detected = await detectPotentialAttendees(voiceChannel);
 
       // Find target #shows-n-movies channel
-      const targetChannel = interaction.guild?.channels.cache.find(
-        c => c.name === config.channelName && c.isTextBased()
-      ) as TextChannel | undefined;
+      const targetChannel = resolveMovieChannel(interaction.guild, config.channelName);
 
       await startAttendanceConfirmation(interaction, planned, detected, targetChannel);
       return;

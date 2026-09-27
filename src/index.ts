@@ -12,6 +12,7 @@ import { commands, registerCommands } from './commands/index.js';
 import { handleScheduleButtonClick } from './components/scheduleButtons.js';
 import { handleRateButtonClick, handleRateModalSubmit } from './components/ratingModal.js';
 import { handleAttendanceButtonClick, handleAttendeeSelect } from './components/attendanceModal.js';
+import { resolveMovieChannel } from './utils/discordHelpers.js';
 
 validateConfig();
 
@@ -80,10 +81,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       }
 
       if (customId.startsWith('attend:')) {
-        const targetChannel = interaction.guild?.channels.cache.find(
-          c => c.name === config.channelName && c.isTextBased()
-        ) as TextChannel | undefined;
-
+        const targetChannel = resolveMovieChannel(interaction.guild, config.channelName);
         await handleAttendanceButtonClick(interaction, targetChannel);
         return;
       }
@@ -109,11 +107,17 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
   } catch (err: any) {
     console.error('[Interaction] Error while processing interaction:', err);
 
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({
-        content: '⚠️ An unexpected error occurred while executing this command.',
-        ephemeral: true,
-      }).catch(() => {});
+    if (interaction.isRepliable()) {
+      if (interaction.deferred) {
+        await interaction.editReply({
+          content: '⚠️ An unexpected error occurred while executing this command.',
+        }).catch(() => {});
+      } else if (!interaction.replied) {
+        await interaction.reply({
+          content: '⚠️ An unexpected error occurred while executing this command.',
+          ephemeral: true,
+        }).catch(() => {});
+      }
     }
   }
 });
