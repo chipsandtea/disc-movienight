@@ -1,28 +1,28 @@
 /**
- * Utility functions for exporting backlog movie titles to external spinner wheels.
+ * Utility functions for exporting backlog movie titles to external spinner wheels (Picker Wheel).
  */
 
 export interface WheelExportResult {
   titles: string[];
   plainText: string;
-  wheelOfNamesUrl: string;
+  pickerWheelUrl: string;
 }
 
 /**
- * Formats a list of movie titles for Wheel of Names or manual copy-pasting.
+ * Formats a list of movie titles for Picker Wheel (pickerwheel.com) or manual copy-pasting.
  */
 export function formatWheelExport(movies: { title: string; releaseYear?: number | null }[]): WheelExportResult {
   const titles = movies.map(m => (m.releaseYear ? `${m.title} (${m.releaseYear})` : m.title));
   const plainText = titles.join('\n');
 
-  // Wheel of Names accepts a URL parameter or can be used with custom format
-  // Note: Wheel of Names API/URL parameters often use ?entries= encoded
-  const encodedEntries = encodeURIComponent(titles.join('\n'));
-  const wheelOfNamesUrl = `https://wheelofnames.com?entries=${encodedEntries}`;
+  // Picker Wheel choices parameter syntax (replace commas in titles to avoid splitting slices)
+  const sanitizedChoices = titles.map(t => t.replace(/,/g, ' -'));
+  const encodedChoices = encodeURIComponent(sanitizedChoices.join(','));
+  const pickerWheelUrl = `https://pickerwheel.com/?choices=${encodedChoices}`;
 
   return {
     titles,
     plainText,
-    wheelOfNamesUrl,
+    pickerWheelUrl,
   };
 }

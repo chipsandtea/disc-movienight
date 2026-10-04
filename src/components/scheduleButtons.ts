@@ -1,6 +1,6 @@
 import { ButtonInteraction, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { getSchedulingSessionById, toggleUserAvailability, getSessionVotes } from '../services/schedule.service.js';
-import { getPlannedMovie } from '../services/movie.service.js';
+import { getMovieById } from '../services/movie.service.js';
 import { buildScheduleEmbed } from '../utils/discordHelpers.js';
 
 /**
@@ -16,6 +16,8 @@ export async function handleScheduleButtonClick(interaction: ButtonInteraction):
   const sessionId = parseInt(parts[2], 10);
   const day = parts[3];
 
+  if (isNaN(sessionId) || !day) return;
+
   const session = await getSchedulingSessionById(sessionId);
   if (!session || session.status !== 'active') {
     await interaction.reply({
@@ -30,16 +32,20 @@ export async function handleScheduleButtonClick(interaction: ButtonInteraction):
     ? (interaction.member.displayName as string)
     : interaction.user.username;
 
-  // Toggle availability in SQLite
-  await toggleUserAvailability(sessionId, userId, userName, day);
+  // Toggle availability in SQLite (returns updated votes)
+  const votes = await toggleUserAvailability(sessionId, userId, userName, day);
 
-  // Fetch updated votes and planned movie
-  const votes = await getSessionVotes(sessionId);
   const plannedMovie = session.plannedMovieId
-    ? await getPlannedMovie()
+    ? await getMovieById(session.plannedMovieId)
     : null;
 
-  const candidateDays = JSON.parse(session.candidateDays) as string[];
+  let candidateDays: string[] = [];
+  try {
+    candidateDays = JSON.parse(session.candidateDays) as string[];
+  } catch {
+    candidateDays = [];
+  }
+
   const updatedEmbed = buildScheduleEmbed(candidateDays, session.defaultTime, votes, plannedMovie);
 
   // Update original message

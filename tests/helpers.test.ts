@@ -17,8 +17,21 @@ describe('Wheel Helper', () => {
       'Unknown Film',
     ]);
     expect(result.plainText).toBe('The Matrix (1999)\nInception (2010)\nUnknown Film');
-    expect(result.wheelOfNamesUrl).toContain('https://wheelofnames.com?entries=');
-    expect(result.wheelOfNamesUrl).toContain(encodeURIComponent('The Matrix (1999)'));
+    expect(result.pickerWheelUrl).toContain(encodeURIComponent('The Matrix (1999)'));
+  });
+
+  it('sanitizes commas in movie titles so choices are not broken on Picker Wheel', () => {
+    const list = [
+      { title: 'Everything Everywhere All at Once, Special Edition', releaseYear: 2022 },
+    ];
+
+    const result = formatWheelExport(list);
+    // PickerWheel choices param shouldn't have raw commas within a single choice
+    const urlParams = new URL(result.pickerWheelUrl);
+    const choices = urlParams.searchParams.get('choices');
+    expect(choices).not.toBeNull();
+    // The choice should have replaced the comma with a dash
+    expect(choices).toBe('Everything Everywhere All at Once - Special Edition (2022)');
   });
 });
 
@@ -81,3 +94,30 @@ describe('Discord Helpers', () => {
     expect(reviewFields[0].name).toContain('(1/');
   });
 });
+
+describe('Auth Helper', () => {
+  it('correctly determines admin permissions via Discord permissions or roles', async () => {
+    const { isUserAdmin } = await import('../src/utils/auth.js');
+    const { PermissionsBitField } = await import('discord.js');
+
+    // 1. User with Administrator permission
+    const adminPermsInteraction: any = {
+      memberPermissions: new PermissionsBitField(PermissionsBitField.Flags.Administrator),
+    };
+    expect(isUserAdmin(adminPermsInteraction)).toBe(true);
+
+    // 2. User with ManageGuild permission
+    const manageGuildInteraction: any = {
+      memberPermissions: new PermissionsBitField(PermissionsBitField.Flags.ManageGuild),
+    };
+    expect(isUserAdmin(manageGuildInteraction)).toBe(true);
+
+    // 3. User with no special permissions
+    const regularInteraction: any = {
+      memberPermissions: new PermissionsBitField(),
+      member: { roles: [] },
+    };
+    expect(isUserAdmin(regularInteraction)).toBe(false);
+  });
+});
+

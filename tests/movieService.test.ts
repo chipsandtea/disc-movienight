@@ -7,6 +7,7 @@ import {
   setPlannedMovie,
   getUserStats,
   getLeaderboard,
+  updateMovieSuggester,
 } from '../src/services/movie.service.js';
 import { recordAttendance } from '../src/services/attendance.service.js';
 import { recordUserRating, finalizeMovieRatings } from '../src/services/rating.service.js';
@@ -97,5 +98,54 @@ describe('Movie Service & Rating Lifecycle', () => {
     const lateJoinerFound = attendeesUpdated.find(a => a.userId === 'user_late_joiner');
     expect(lateJoinerFound).toBeDefined();
     expect(lateJoinerFound?.userName).toBe('Late Joiner');
+  });
+
+  it('allows admins to reassign movie suggester and updates recommendation statistics', async () => {
+    const tmdbId = Math.floor(Date.now() / 1000) + Math.floor(Math.random() * 100000);
+    const userOriginal = `user_orig_${tmdbId}`;
+    const userNew = `user_new_${tmdbId}`;
+
+    const movieDetails = {
+      id: tmdbId,
+      title: `Admin Reassign Test ${tmdbId}`,
+      releaseYear: 2024,
+      runtimeMinutes: 100,
+      overview: 'Testing admin reattribution.',
+      posterUrl: null,
+      imdbId: `tt${tmdbId}`,
+      tmdbUrl: `https://themoviedb.org/movie/${tmdbId}`,
+      imdbUrl: `https://imdb.com/title/tt${tmdbId}/`,
+    };
+
+    // 1. Suggest movie as userOriginal
+    const addResult = await addMovieToBacklog(movieDetails, userOriginal, 'OriginalSuggester');
+    expect(addResult.status).toBe('added');
+    const movieId = addResult.movie.id;
+
+    // 2. Non-admin cannot reassign
+    const nonAdminResult = await updateMovieSuggester(movieId, userNew, 'NewSuggester', false);
+    expect(nonAdminResult.success).toBe(false);
+    expect(nonAdminResult.error).toContain('Only administrators');
+
+    // Verify DB was unchanged
+    const unchanged = await db.select().from(movies).where(eq(movies.id, movieId)).limit(1);
+    expect(unchanged[0].suggestedByUserId).toBe(userOriginal);
+
+    // 3. Admin reassigns successfully
+    const adminResult = await updateMovieSuggester(movieId, userNew, 'NewSuggester', true);
+    expect(adminResult.success).toBe(true);
+    expect(adminResult.movie?.suggestedByUserId).toBe(userNew);
+    expect(adminResult.movie?.suggestedByUsername).toBe('NewSuggester');
+
+    // 4. Verify DB updated
+    const updated = await db.select().from(movies).where(eq(movies.id, movieId)).limit(1);
+    expect(updated[0].suggestedByUserId).toBe(userNew);
+    expect(updated[0].suggestedByUsername).toBe('NewSuggester');
+
+    // 5. Verify stats reflection
+    const originalStats = await getUserStats(userOriginal);
+    const newStats = await getUserStats(userNew);
+    expect(originalStats.recommendations.totalSuggested).toBe(0);
+    expect(newStats.recommendations.totalSuggested).toBe(1);
   });
 });

@@ -5,19 +5,21 @@ import {
   ButtonBuilder,
   ButtonStyle,
   PermissionFlagsBits,
-  GuildScheduledEventEntityType,
-  GuildScheduledEventPrivacyLevel,
+  EmbedBuilder,
 } from 'discord.js';
 import {
   createSchedulingSession,
   getActiveSchedulingSession,
+  getLatestSchedulingSession,
   finalizeSchedulingSession,
   cancelSchedulingSession,
   updateSessionMessageId,
-  getSessionVotes,
 } from '../services/schedule.service.js';
 import { getPlannedMovie } from '../services/movie.service.js';
-import { buildScheduleEmbed } from '../utils/discordHelpers.js';
+import { buildScheduleEmbed, formatRuntime } from '../utils/discordHelpers.js';
+import { syncDiscordEvent, deleteDiscordEvent } from '../services/discordEvent.service.js';
+import { calculateEventDate } from '../utils/dateHelper.js';
+import { isUserAdmin } from '../utils/auth.js';
 
 export const scheduleCommand = {
   data: new SlashCommandBuilder()
@@ -27,7 +29,7 @@ export const scheduleCommand = {
     .addSubcommand(sub =>
       sub
         .setName('start')
-        .setDescription('Start a new availability solicitation poll')
+        .setDescription('Start a new availability solicitation poll (requires a planned movie)')
         .addStringOption(opt =>
           opt
             .setName('days')
@@ -44,30 +46,73 @@ export const scheduleCommand = {
     .addSubcommand(sub =>
       sub
         .setName('finalize')
-        .setDescription('Finalize availability and declare the winning day/time')
+        .setDescription('Declare the winning day/time and create or update the Discord Scheduled Event')
         .addStringOption(opt =>
           opt
             .setName('day')
-            .setDescription('The winning day (e.g. Saturday)')
+            .setDescription('The winning day or date (e.g. Saturday, Oct 15, Tomorrow)')
             .setRequired(true)
         )
         .addStringOption(opt =>
           opt
             .setName('time')
-            .setDescription('Optional start time override (e.g. 8:30 PM)')
+            .setDescription('Start time (e.g. 8:00 PM, 20:30)')
+            .setRequired(false)
+        )
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName('modify')
+        .setDescription('Modify a finalized or active schedule, updating the Discord Scheduled Event')
+        .addStringOption(opt =>
+          opt
+            .setName('day')
+            .setDescription('The new day or date (e.g. Saturday, Oct 15, Tomorrow)')
+            .setRequired(true)
+        )
+        .addStringOption(opt =>
+          opt
+            .setName('time')
+            .setDescription('The new start time (e.g. 8:30 PM, 20:00)')
             .setRequired(false)
         )
     )
     .addSubcommand(sub =>
       sub
         .setName('cancel')
-        .setDescription('Cancel the currently active availability poll')
+        .setDescription('Cancel the movie night schedule and delete the Discord Scheduled Event')
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName('current')
+        .setDescription('View the current movie night schedule status')
     ),
 
   async execute(interaction: ChatInputCommandInteraction) {
     const subcommand = interaction.options.getSubcommand();
 
+    if (subcommand !== 'current' && !isUserAdmin(interaction)) {
+      await interaction.reply({
+        content: '❌ Only administrators can manage movie night scheduling polls and events.',
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // ==========================================
+    // 1. /schedule start
+    // ==========================================
     if (subcommand === 'start') {
+      const plannedMovie = await getPlannedMovie();
+      if (!plannedMovie) {
+        await interaction.reply({
+          content: '❌ **Cannot start schedule**: No movie is currently planned for Movie Night!\n' +
+            'Please select and lock in a movie first using `/movie set <movie>` before starting the availability poll.',
+          ephemeral: true,
+        });
+        return;
+      }
+
       const daysInput = interaction.options.getString('days') || 'Friday, Saturday, Sunday';
       const defaultTime = interaction.options.getString('time') || '8:00 PM';
 
@@ -81,11 +126,10 @@ export const scheduleCommand = {
         return;
       }
 
-      const plannedMovie = await getPlannedMovie();
       const session = await createSchedulingSession(
         candidateDays,
         defaultTime,
-        plannedMovie?.id || null,
+        plannedMovie.id,
         interaction.channelId
       );
 
@@ -124,25 +168,31 @@ export const scheduleCommand = {
       return;
     }
 
+    // ==========================================
+    // 2. /schedule finalize
+    // ==========================================
     if (subcommand === 'finalize') {
-      const active = await getActiveSchedulingSession();
-      if (!active) {
-        await interaction.reply({ content: '❌ No active scheduling session found.', ephemeral: true });
+      const session = await getLatestSchedulingSession();
+      if (!session) {
+        await interaction.reply({
+          content: '❌ No active or recent scheduling session found. Use `/schedule start` to start one!',
+          ephemeral: true,
+        });
         return;
       }
 
+      await interaction.deferReply();
+
       const winningDay = interaction.options.getString('day', true);
-      const timeOverride = interaction.options.getString('time') || active.defaultTime;
+      const timeOverride = interaction.options.getString('time') || session.defaultTime;
+      const plannedMovie = session.plannedMovieId ? await getPlannedMovie() : null;
 
-      const finalized = await finalizeSchedulingSession(active.id, winningDay, timeOverride);
-      const plannedMovie = active.plannedMovieId ? await getPlannedMovie() : null;
-
-      // Lock buttons on original poll message if accessible
-      if (active.channelId && active.messageId) {
+      // Disable buttons on the original poll message if accessible
+      if (session.channelId && session.messageId) {
         try {
-          const channel = await interaction.client.channels.fetch(active.channelId);
+          const channel = await interaction.client.channels.fetch(session.channelId);
           if (channel && channel.isTextBased()) {
-            const originalMsg = await channel.messages.fetch(active.messageId);
+            const originalMsg = await channel.messages.fetch(session.messageId);
             if (originalMsg) {
               await originalMsg.edit({ components: [] });
             }
@@ -152,60 +202,197 @@ export const scheduleCommand = {
         }
       }
 
-      // Try creating native Discord Scheduled Event
+      // Calculate target date for Discord Scheduled Event
+      const targetDate = calculateEventDate(winningDay, timeOverride);
+
       let eventNotice = '';
-      if (interaction.guild && interaction.guild.scheduledEvents) {
-        try {
-          // Estimate scheduled start date
-          const now = new Date();
-          const targetDate = new Date(now.getTime() + 24 * 60 * 60 * 1000 * 2); // default 2 days out
-          const eventTitle = plannedMovie ? `🎬 Movie Night: ${plannedMovie.title}` : '🎬 Weekly Movie Night';
+      let eventId: string | null = session.discordEventId || null;
 
-          const voiceChannel = interaction.guild.channels.cache.find(c => c.isVoiceBased());
-          const entityType = voiceChannel
-            ? GuildScheduledEventEntityType.Voice
-            : GuildScheduledEventEntityType.External;
-
-          const eventPayload: any = {
-            name: eventTitle,
-            scheduledStartTime: targetDate,
-            privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly,
-            entityType,
-            description: plannedMovie
-              ? `Watching ${plannedMovie.title} (${plannedMovie.releaseYear || ''}). Runtime: ${plannedMovie.runtimeMinutes || 'N/A'} mins.`
-              : 'Weekly Movie Night with friends!',
-          };
-
-          if (voiceChannel) {
-            eventPayload.channel = voiceChannel.id;
-          } else {
-            // External events require an end time and location metadata
-            eventPayload.scheduledEndTime = new Date(targetDate.getTime() + 3 * 60 * 60 * 1000);
-            eventPayload.entityMetadata = { location: 'Movie Voice Channel' };
-          }
-
-          await interaction.guild.scheduledEvents.create(eventPayload);
-          eventNotice = '\n📅 *Native Discord Scheduled Event created!*';
-        } catch (err: any) {
-          console.warn('[Schedule] Could not create Discord Scheduled Event:', err.message);
+      if (interaction.guild && plannedMovie) {
+        const syncedEvent = await syncDiscordEvent({
+          guild: interaction.guild,
+          session,
+          movie: plannedMovie,
+          targetDate,
+        });
+        if (syncedEvent) {
+          eventId = syncedEvent.id;
+          eventNotice = `\n📅 *Native Discord Scheduled Event created: [${syncedEvent.name}](${syncedEvent.url || ''})*`;
         }
       }
 
-      await interaction.reply({
+      await finalizeSchedulingSession(
+        session.id,
+        winningDay,
+        timeOverride,
+        eventId,
+        targetDate.toISOString()
+      );
+
+      await interaction.editReply({
         content: `🎉 **Movie Night is officially scheduled for ${winningDay} at ${timeOverride}!**${eventNotice}\nGet the popcorn ready! 🍿`,
       });
       return;
     }
 
-    if (subcommand === 'cancel') {
-      const active = await getActiveSchedulingSession();
-      if (!active) {
-        await interaction.reply({ content: 'No active scheduling session found.', ephemeral: true });
+    // ==========================================
+    // 3. /schedule modify
+    // ==========================================
+    if (subcommand === 'modify') {
+      const session = await getLatestSchedulingSession();
+      if (!session) {
+        await interaction.reply({
+          content: '❌ No active or finalized schedule found to modify. Use `/schedule start` to begin a poll!',
+          ephemeral: true,
+        });
         return;
       }
 
-      await cancelSchedulingSession(active.id);
-      await interaction.reply({ content: '🚫 The active scheduling session has been cancelled.' });
+      await interaction.deferReply();
+
+      const newDay = interaction.options.getString('day', true);
+      const newTime = interaction.options.getString('time') || session.defaultTime;
+      const plannedMovie = session.plannedMovieId ? await getPlannedMovie() : null;
+
+      // Disable buttons on any open poll message if it was still active
+      if (session.status === 'active' && session.channelId && session.messageId) {
+        try {
+          const channel = await interaction.client.channels.fetch(session.channelId);
+          if (channel && channel.isTextBased()) {
+            const originalMsg = await channel.messages.fetch(session.messageId);
+            if (originalMsg) {
+              await originalMsg.edit({ components: [] });
+            }
+          }
+        } catch (e) {
+          console.warn('[Schedule] Could not disable buttons on poll message during modify:', e);
+        }
+      }
+
+      const targetDate = calculateEventDate(newDay, newTime);
+      let eventNotice = '';
+      let eventId = session.discordEventId || null;
+
+      if (interaction.guild && plannedMovie) {
+        const syncedEvent = await syncDiscordEvent({
+          guild: interaction.guild,
+          session,
+          movie: plannedMovie,
+          targetDate,
+        });
+        if (syncedEvent) {
+          eventId = syncedEvent.id;
+          eventNotice = `\n📅 *Updated native Discord Scheduled Event to **${newDay} at ${newTime}**!*`;
+        }
+      }
+
+      await finalizeSchedulingSession(
+        session.id,
+        newDay,
+        newTime,
+        eventId,
+        targetDate.toISOString()
+      );
+
+      await interaction.editReply({
+        content: `🔄 **Movie Night Schedule Modified!**\n` +
+          `Movie Night has been updated to **${newDay} at ${newTime}**!${eventNotice}\n` +
+          `${plannedMovie ? `Watching: **${plannedMovie.title}** (${formatRuntime(plannedMovie.runtimeMinutes)})` : ''}`,
+      });
+      return;
+    }
+
+    // ==========================================
+    // 4. /schedule cancel
+    // ==========================================
+    if (subcommand === 'cancel') {
+      const session = await getLatestSchedulingSession();
+      if (!session) {
+        await interaction.reply({
+          content: 'No active or finalized scheduling session found to cancel.',
+          ephemeral: true,
+        });
+        return;
+      }
+
+      await interaction.deferReply();
+
+      // Delete Discord Scheduled Event if one exists
+      let eventRemoved = false;
+      if (session.discordEventId && interaction.guild) {
+        eventRemoved = await deleteDiscordEvent(interaction.guild, session.discordEventId);
+      }
+
+      // Disable poll buttons if message is accessible
+      if (session.channelId && session.messageId) {
+        try {
+          const channel = await interaction.client.channels.fetch(session.channelId);
+          if (channel && channel.isTextBased()) {
+            const originalMsg = await channel.messages.fetch(session.messageId);
+            if (originalMsg) {
+              await originalMsg.edit({ components: [] });
+            }
+          }
+        } catch (e) {
+          console.warn('[Schedule] Could not edit poll message on cancel:', e);
+        }
+      }
+
+      await cancelSchedulingSession(session.id);
+
+      const eventNote = eventRemoved
+        ? '\n📅 *The corresponding Discord Scheduled Event was also removed.*'
+        : '';
+
+      await interaction.editReply({
+        content: `🚫 **The movie night schedule has been cancelled.**${eventNote}`,
+      });
+      return;
+    }
+
+    // ==========================================
+    // 5. /schedule current
+    // ==========================================
+    if (subcommand === 'current') {
+      const session = await getLatestSchedulingSession();
+      if (!session) {
+        await interaction.reply({
+          content: 'No active or finalized movie night schedule found.',
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const plannedMovie = session.plannedMovieId ? await getPlannedMovie() : null;
+
+      const embed = new EmbedBuilder()
+        .setTitle('📅 Current Movie Night Schedule')
+        .setColor(session.status === 'finalized' ? 0x10B981 : 0x8B5CF6)
+        .addFields(
+          { name: '📌 Status', value: `\`${session.status.toUpperCase()}\``, inline: true },
+          { name: '🕒 Slot', value: session.finalizedSlot || `Poll active (${session.defaultTime})`, inline: true }
+        );
+
+      if (plannedMovie) {
+        embed.addFields({
+          name: '🎬 Planned Feature',
+          value: `**${plannedMovie.title}** (${plannedMovie.releaseYear || 'N/A'})\n⏱ Runtime: ${formatRuntime(plannedMovie.runtimeMinutes)}`,
+          inline: false,
+        });
+        if (plannedMovie.posterPath) {
+          embed.setThumbnail(plannedMovie.posterPath);
+        }
+      }
+
+      if (session.discordEventId) {
+        embed.addFields({
+          name: '📅 Discord Event',
+          value: `Linked to Discord Event ID: \`${session.discordEventId}\``,
+          inline: false,
+        });
+      }
+
+      await interaction.reply({ embeds: [embed] });
       return;
     }
   },

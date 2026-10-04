@@ -65,23 +65,30 @@ export async function recordAttendance(
   movieId: number,
   attendees: { userId: string; userName: string }[]
 ): Promise<Attendance[]> {
-  // Clear any existing attendance for this movie to allow clean re-runs
-  await db.delete(attendance).where(eq(attendance.movieId, movieId));
+  // Deduplicate attendees by userId to ensure uniqueness
+  const uniqueAttendees = Array.from(
+    new Map(attendees.map(a => [a.userId, a])).values()
+  );
 
-  if (attendees.length === 0) return [];
+  return db.transaction(async tx => {
+    // Clear any existing attendance for this movie within transaction
+    await tx.delete(attendance).where(eq(attendance.movieId, movieId));
 
-  const records = await db
-    .insert(attendance)
-    .values(
-      attendees.map(a => ({
-        movieId,
-        userId: a.userId,
-        userName: a.userName,
-      }))
-    )
-    .returning();
+    if (uniqueAttendees.length === 0) return [];
 
-  return records;
+    const records = await tx
+      .insert(attendance)
+      .values(
+        uniqueAttendees.map(a => ({
+          movieId,
+          userId: a.userId,
+          userName: a.userName,
+        }))
+      )
+      .returning();
+
+    return records;
+  });
 }
 
 /**

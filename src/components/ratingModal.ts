@@ -7,7 +7,7 @@ import {
   ActionRowBuilder,
 } from 'discord.js';
 import { parseRating } from '../utils/ratingParser.js';
-import { recordUserRating } from '../services/rating.service.js';
+import { recordUserRating, updateLiveRatingProgressMessage } from '../services/rating.service.js';
 import { db } from '../db/client.js';
 import { ratings, movies } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
@@ -108,6 +108,9 @@ export async function handleRateModalSubmit(interaction: ModalSubmitInteraction)
     parsed.rating,
     reviewRaw.trim() || undefined
   );
+
+  // Update live progress card in #shows-n-movies in real-time
+  await updateLiveRatingProgressMessage(interaction.client, movieId);
 
   const actionWord = isUpdate ? 'updated' : 'recorded';
   await interaction.reply({

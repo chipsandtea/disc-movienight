@@ -11,7 +11,9 @@ import {
 } from 'discord.js';
 import { Movie } from '../db/schema.js';
 import { CandidateAttendee, recordAttendance } from '../services/attendance.service.js';
-import { dispatchRatingRequests } from '../services/rating.service.js';
+import { dispatchRatingRequests, getRatingProgress } from '../services/rating.service.js';
+import { buildRatingProgressEmbed } from '../utils/discordHelpers.js';
+import { isUserAdmin } from '../utils/auth.js';
 
 interface PendingConfirmation {
   movieId: number;
@@ -19,14 +21,32 @@ interface PendingConfirmation {
   attendees: Map<string, string>; // userId -> userName
   adminUserId: string;
   channelId: string;
+  targetChannel?: TextChannel | null;
   timer: NodeJS.Timeout;
   resolved: boolean;
 }
 
 const pendingConfirmations = new Map<string, PendingConfirmation>();
 
+async function executeAttendanceConfirmation(
+  pending: PendingConfirmation,
+  client: any
+): Promise<{ count: number; progressEmbed: EmbedBuilder | null }> {
+  const finalAttendees = Array.from(pending.attendees.entries()).map(([userId, userName]) => ({
+    userId,
+    userName,
+  }));
+
+  await recordAttendance(pending.movieId, finalAttendees);
+  await dispatchRatingRequests(client, pending.movie, finalAttendees, pending.targetChannel);
+  const progress = await getRatingProgress(pending.movieId);
+  const progressEmbed = progress ? buildRatingProgressEmbed(progress) : null;
+
+  return { count: finalAttendees.length, progressEmbed };
+}
+
 /**
- * Initiates the 10-second attendance confirmation workflow for the Admin.
+ * Initiates the attendance confirmation workflow for the Admin.
  */
 export async function startAttendanceConfirmation(
   interaction: ChatInputCommandInteraction,
@@ -47,9 +67,9 @@ export async function startAttendanceConfirmation(
     .setTitle(`🎬 Confirm Attendees: ${movie.title}`)
     .setColor(0xF59E0B)
     .setDescription(
-      `Detected potential attendees from voice/scheduling:\n${initialList}\n\n⏱ **10-Second Auto-Confirmation Window Active**\nClick **Confirm Now** or adjust the list below. If no changes are made, this list will auto-confirm in 10 seconds.`
+      `Detected potential attendees from voice/scheduling:\n${initialList}\n\n⏱ **Auto-Confirmation Window Active (15s)**\nClick **Confirm Now** or adjust the list below. If no changes are made, this list will auto-confirm.`
     )
-    .setFooter({ text: '10-second confirmation timer running...' });
+    .setFooter({ text: 'Confirmation timer running...' });
 
   const confirmBtn = new ButtonBuilder()
     .setCustomId(`attend:confirm:${movie.id}`)
@@ -76,7 +96,7 @@ export async function startAttendanceConfirmation(
 
   const selectRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(userSelect);
 
-  const reply = await interaction.reply({
+  await interaction.reply({
     embeds: [embed],
     components: [selectRow, buttonRow],
     ephemeral: true,
@@ -84,32 +104,30 @@ export async function startAttendanceConfirmation(
 
   const sessionKey = `${interaction.guildId}:${movie.id}`;
 
-  // 10-second auto-confirmation timer
-  const timer = setTimeout(async () => {
-    const pending = pendingConfirmations.get(sessionKey);
-    if (!pending || pending.resolved) return;
+  const scheduleTimer = (durationMs: number) => {
+    return setTimeout(async () => {
+      const current = pendingConfirmations.get(sessionKey);
+      if (!current || current.resolved) return;
 
-    pending.resolved = true;
-    pendingConfirmations.delete(sessionKey);
+      current.resolved = true;
+      pendingConfirmations.delete(sessionKey);
 
-    const finalAttendees = Array.from(pending.attendees.entries()).map(([userId, userName]) => ({
-      userId,
-      userName,
-    }));
+      const { count, progressEmbed } = await executeAttendanceConfirmation(current, interaction.client);
 
-    await recordAttendance(pending.movieId, finalAttendees);
-    await dispatchRatingRequests(interaction.client, pending.movie, finalAttendees, targetChannel);
+      try {
+        await interaction.editReply({
+          content: `✅ **Confirmation window elapsed.**\nConfirmed **${count}** attendees! Rating requests dispatched to DMs and #${targetChannel?.name || 'shows-n-movies'}.\n\n` +
+            `📊 *Live status below updates in real-time as reviews roll in:*`,
+          embeds: progressEmbed ? [progressEmbed] : [],
+          components: [],
+        });
+      } catch (e) {
+        console.error('[Attendance] Could not update ephemeral reply after timeout:', e);
+      }
+    }, durationMs);
+  };
 
-    try {
-      await interaction.editReply({
-        content: `✅ **10-second confirmation window elapsed.**\nAutomatically confirmed **${finalAttendees.length}** attendees and dispatched rating requests to DMs and #${targetChannel?.name || 'shows-n-movies'}!`,
-        embeds: [],
-        components: [],
-      });
-    } catch (e) {
-      console.error('[Attendance] Could not update ephemeral reply after timeout:', e);
-    }
-  }, 10_000);
+  const timer = scheduleTimer(15_000);
 
   pendingConfirmations.set(sessionKey, {
     movieId: movie.id,
@@ -117,6 +135,7 @@ export async function startAttendanceConfirmation(
     attendees: attendeeMap,
     adminUserId: interaction.user.id,
     channelId: interaction.channelId,
+    targetChannel,
     timer,
     resolved: false,
   });
@@ -138,11 +157,38 @@ export async function handleAttendeeSelect(interaction: UserSelectMenuInteractio
     return;
   }
 
+  if (interaction.user.id !== pending.adminUserId && !isUserAdmin(interaction)) {
+    await interaction.reply({ content: '❌ Only administrators can modify movie attendees.', ephemeral: true });
+    return;
+  }
+
   // Clear and update with selected users
   pending.attendees.clear();
   for (const [userId, user] of interaction.users) {
     pending.attendees.set(userId, user.displayName || user.username);
   }
+
+  // Reset the timer to give the admin 20 seconds after editing
+  clearTimeout(pending.timer);
+  pending.timer = setTimeout(async () => {
+    const current = pendingConfirmations.get(sessionKey);
+    if (!current || current.resolved) return;
+
+    current.resolved = true;
+    pendingConfirmations.delete(sessionKey);
+
+    const { count, progressEmbed } = await executeAttendanceConfirmation(current, interaction.client);
+    try {
+      await interaction.editReply({
+        content: `✅ **Confirmation completed.**\nConfirmed **${count}** attendees! Rating requests dispatched.\n\n` +
+          `📊 *Live status below updates in real-time as reviews roll in:*`,
+        embeds: progressEmbed ? [progressEmbed] : [],
+        components: [],
+      });
+    } catch (e) {
+      console.error('[Attendance] Could not update ephemeral reply after timeout:', e);
+    }
+  }, 20_000);
 
   const updatedList = Array.from(pending.attendees.keys()).map(id => `<@${id}>`).join(', ') || '_No attendees selected_';
 
@@ -176,6 +222,11 @@ export async function handleAttendanceButtonClick(
     return;
   }
 
+  if (interaction.user.id !== pending.adminUserId && !isUserAdmin(interaction)) {
+    await interaction.reply({ content: '❌ Only administrators can confirm or cancel attendance.', ephemeral: true });
+    return;
+  }
+
   clearTimeout(pending.timer);
   pending.resolved = true;
   pendingConfirmations.delete(sessionKey);
@@ -190,17 +241,12 @@ export async function handleAttendanceButtonClick(
   }
 
   if (action === 'confirm') {
-    const finalAttendees = Array.from(pending.attendees.entries()).map(([userId, userName]) => ({
-      userId,
-      userName,
-    }));
-
-    await recordAttendance(pending.movieId, finalAttendees);
-    await dispatchRatingRequests(interaction.client, pending.movie, finalAttendees, targetChannel);
+    const { count, progressEmbed } = await executeAttendanceConfirmation(pending, interaction.client);
 
     await interaction.update({
-      content: `✅ Confirmed **${finalAttendees.length}** attendees! Rating requests have been dispatched to DMs and #${targetChannel?.name || 'shows-n-movies'}.`,
-      embeds: [],
+      content: `✅ Confirmed **${count}** attendees! Rating requests have been dispatched to DMs and #${targetChannel?.name || 'shows-n-movies'}.\n\n` +
+        `📊 *Live status below updates in real-time as reviews roll in:*`,
+      embeds: progressEmbed ? [progressEmbed] : [],
       components: [],
     });
   }

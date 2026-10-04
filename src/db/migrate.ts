@@ -1,7 +1,8 @@
-import { rawClient } from './client.js';
+import { rawClient, configurePragmas } from './client.js';
 
 export async function initDatabase() {
   console.log('[DB] Ensuring database tables are initialized...');
+  await configurePragmas();
 
   await rawClient.execute(`
     CREATE TABLE IF NOT EXISTS movies (
@@ -17,9 +18,18 @@ export async function initDatabase() {
       suggested_by_user_id TEXT NOT NULL,
       suggested_by_username TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      watched_at TEXT
+      watched_at TEXT,
+      rating_message_id TEXT,
+      rating_channel_id TEXT
     );
   `);
+
+  try {
+    await rawClient.execute(`ALTER TABLE movies ADD COLUMN rating_message_id TEXT;`);
+  } catch {}
+  try {
+    await rawClient.execute(`ALTER TABLE movies ADD COLUMN rating_channel_id TEXT;`);
+  } catch {}
 
   await rawClient.execute(`
     CREATE TABLE IF NOT EXISTS attendance (
@@ -54,9 +64,19 @@ export async function initDatabase() {
       message_id TEXT,
       channel_id TEXT,
       finalized_slot TEXT,
+      discord_event_id TEXT,
+      scheduled_start_time TEXT,
       created_at TEXT NOT NULL
     );
   `);
+
+  // Safe migrations for existing SQLite databases
+  try {
+    await rawClient.execute(`ALTER TABLE scheduling_sessions ADD COLUMN discord_event_id TEXT;`);
+  } catch {}
+  try {
+    await rawClient.execute(`ALTER TABLE scheduling_sessions ADD COLUMN scheduled_start_time TEXT;`);
+  } catch {}
 
   await rawClient.execute(`
     CREATE TABLE IF NOT EXISTS availability_votes (

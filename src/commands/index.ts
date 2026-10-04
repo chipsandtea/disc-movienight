@@ -1,16 +1,23 @@
 import { REST, Routes } from 'discord.js';
-import { suggestCommand } from './suggest.js';
 import { watchlistCommand } from './watchlist.js';
 import { scheduleCommand } from './schedule.js';
 import { movieCommand } from './movie.js';
 import { config } from '../config.js';
 
-export const commands = [
-  suggestCommand,
-  watchlistCommand,
-  scheduleCommand,
+import { ChatInputCommandInteraction, AutocompleteInteraction } from 'discord.js';
+
+export interface BotCommand {
+  data: { name: string; toJSON: () => unknown };
+  execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
+  autocomplete?: (interaction: AutocompleteInteraction) => Promise<void>;
+}
+
+export const commands: BotCommand[] = [
   movieCommand,
+  scheduleCommand,
+  watchlistCommand,
 ];
+
 
 export async function registerCommands(): Promise<void> {
   if (!config.discordToken || !config.clientId) {

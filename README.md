@@ -8,17 +8,21 @@ Engineered to run 24/7 on a **Raspberry Pi Zero 2 W** (consuming only ~40 MB RAM
 
 ## 🌟 Key Features
 
-1. **Weekly Availability Scheduling**:
-   - `/schedule start [days] [time]`: Posts an interactive message with candidate days (defaults to Friday, Saturday, Sunday @ 8:00 PM).
-   - If a movie is planned, displays its poster and runtime so friends know how long the movie runs.
+1. **Weekly Availability Scheduling & Event Sync**:
+   - `/schedule start [days] [time]`: Posts an interactive message with candidate days (defaults to Friday, Saturday, Sunday @ 8:00 PM). **Requires a movie to be locked in first** (`/movie set`).
+   - Displays the planned movie's poster, overview, and runtime so friends know how long the movie runs.
    - **Reboot-Proof**: Buttons use stateless SQLite lookups (`sched:toggle:<sessionId>:<day>`), surviving bot restarts or Pi updates.
-   - `/schedule finalize [day] [time]`: Declares the winning slot and automatically creates a native **Discord Scheduled Event** on your server.
+   - `/schedule finalize day: <day> [time]`: Declares the winning slot, locks poll buttons, and automatically creates a native **Discord Scheduled Event** on your server.
+   - `/schedule modify day: <day> [time]`: Easily change the date or time anytime—even after finalization. Automatically updates the Discord Scheduled Event!
+   - `/schedule cancel`: Cancels the schedule and automatically removes the Discord Scheduled Event from the server.
+   - **Automatic Sync**: When `/movie set` is used to change or update the planned film, any linked Discord Scheduled Event and active availability poll are automatically updated with the new title, description, poster, and runtime.
 
 2. **Movie Watchlist & Suggestions**:
-   - `/suggest <movie>`: Live autocomplete search powered by TMDB showing `Title (Year)`. Also supports pasting an IMDb URL or IMDb ID (`tt0111161`).
+   - `/movie suggest <movie> [user]`: Live autocomplete search powered by TMDB showing `Title (Year)`. Also supports pasting an IMDb URL or IMDb ID (`tt0111161`). Admins can pass `user: @member` to suggest on behalf of another user.
+   - `/movie set-suggester <movie> <user>`: Admins can reassign who suggested any movie across backlog, planned, or watched status.
    - **Duplicate Detection**: Alerts you if a movie is already in the backlog or was previously watched (shows past watch date and score, with optional `--rewatch` override).
-   - `/watchlist view [filter: backlog|watched]`: Browse active suggestions or past history.
-   - `/watchlist wheel-export`: Generates a clean list of titles and a **pre-populated direct link to [Wheel of Names](https://wheelofnames.com)**.
+   - `/movie list [status] [user]`: Browse movies filtered by status (`backlog`, `watched`, `planned`, `all`) or filter by the friend who suggested them.
+   - `/watchlist wheel-export`: Generates a clean list of titles and a **pre-populated direct link to [Picker Wheel](https://pickerwheel.com)**.
 
 3. **Typo-Proof Movie Selection**:
    - `/movie set <movie>`: Uses Discord Autocomplete filtered to your backlog (e.g. `[#12] The Matrix (1999)`), passing the exact internal database ID without spelling mistakes.
@@ -50,22 +54,25 @@ Engineered to run 24/7 on a **Raspberry Pi Zero 2 W** (consuming only ~40 MB RAM
 
 | Command | Subcommands / Options | Description |
 | :--- | :--- | :--- |
-| `/suggest` | `movie: <title or IMDb URL>`, `[rewatch: bool]` | Suggest a movie with live TMDB autocomplete search |
-| `/watchlist` | `view [filter: backlog\|watched]` | View movies in the backlog or watched list |
-| | `remove movie: <selection>` | Remove an entry (original suggester or admin) |
-| | `wheel-export` | Export titles formatted for Wheel of Names |
-| `/schedule` | `start [days] [time]` | Start weekly availability poll with interactive buttons |
-| | `finalize day: <day> [time]` | Finalize winning slot and create Discord Scheduled Event |
-| | `cancel` | Cancel active scheduling poll |
-| `/movie` | `set movie: <selection>` | Lock in the planned movie for the upcoming movie night |
+| `/movie` | `suggest movie: <title/URL> [rewatch] [user]` | Suggest a movie with TMDB search (admins can attribute to another user) |
+| | `set-suggester movie: <selection> user: <user>` | Reassign who suggested a movie across backlog/watched (Admin only) |
+| | `list [status] [user]` | Browse movies filtered by status (`backlog`, `watched`, `planned`, `all`) or suggester |
+| | `set movie: <selection>` | Lock in the planned movie for the upcoming movie night |
 | | `current` | View details and runtime of this week's planned movie |
 | | `random [count: 1-5]` | Draw random movie candidates from the backlog |
 | | `finish` | Trigger 10-second attendance confirmation & send rating forms |
-| | `status` | View rating submission checklist (submitted vs pending) |
+| | `status` | View live rating submission progress |
 | | `nudge` | Ping members who haven't submitted their reviews |
 | | `finalize-ratings` | Reveal the Grand Results card in `#shows-n-movies` |
 | | `leaderboard` | View all watched movies ranked by group score |
 | | `stats [user]` | View attendance, personal scores, and recommendation track record |
+| `/watchlist` | `remove movie: <selection>` | Remove an entry (original suggester or admin) |
+| | `wheel-export` | Export titles formatted for Picker Wheel |
+| `/schedule` | `start [days] [time]` | Start weekly availability poll (requires planned movie) |
+| | `finalize day: <day> [time]` | Finalize winning slot and create/update Discord Scheduled Event |
+| | `modify day: <day> [time]` | Modify schedule date or time and update Discord Scheduled Event |
+| | `cancel` | Cancel schedule and delete the Discord Scheduled Event |
+| | `current` | View current schedule status and Discord event link |
 
 ---
 
@@ -197,7 +204,7 @@ sqlite3 movienight.db ".backup 'movienight-backup.db'"
 
 The project includes unit and integration tests covering:
 - Rating parser (handling half-points, commas, fractions, and invalid bounds)
-- Wheel of Names URL encoding and title formatting
+- Picker Wheel URL encoding and title formatting
 - Full movie lifecycle (backlog insertion, duplicate handling, attendance, ratings, user recommendation stats, and leaderboard rankings)
 
 Run tests anytime with:

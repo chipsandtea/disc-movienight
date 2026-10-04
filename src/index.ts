@@ -8,7 +8,7 @@ import {
 } from 'discord.js';
 import { config, validateConfig } from './config.js';
 import { initDatabase } from './db/migrate.js';
-import { commands, registerCommands } from './commands/index.js';
+import { commands, registerCommands, BotCommand } from './commands/index.js';
 import { handleScheduleButtonClick } from './components/scheduleButtons.js';
 import { handleRateButtonClick, handleRateModalSubmit } from './components/ratingModal.js';
 import { handleAttendanceButtonClick, handleAttendeeSelect } from './components/attendanceModal.js';
@@ -26,7 +26,7 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 
-const commandMap = new Map<string, (typeof commands)[number]>();
+const commandMap = new Map<string, BotCommand>();
 for (const cmd of commands) {
   commandMap.set(cmd.data.name, cmd);
 }

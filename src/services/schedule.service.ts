@@ -1,6 +1,6 @@
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, or, and } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { schedulingSessions, availabilityVotes, SchedulingSession, AvailabilityVote } from '../db/schema.js';
+import { schedulingSessions, availabilityVotes, SchedulingSession } from '../db/schema.js';
 
 export interface ParsedVote {
   userId: string;
@@ -10,32 +10,34 @@ export interface ParsedVote {
 
 /**
  * Creates a new weekly availability scheduling session.
- * Automatically deactivates any previously active session.
+ * Requires a planned movie ID. Automatically deactivates any previously active session.
  */
 export async function createSchedulingSession(
   candidateDays: string[],
   defaultTime: string = '8:00 PM',
-  plannedMovieId: number | null = null,
+  plannedMovieId: number,
   channelId?: string
 ): Promise<SchedulingSession> {
-  // Cancel previous active sessions
-  await db
-    .update(schedulingSessions)
-    .set({ status: 'cancelled' })
-    .where(eq(schedulingSessions.status, 'active'));
+  return db.transaction(async tx => {
+    // Cancel previous active sessions
+    await tx
+      .update(schedulingSessions)
+      .set({ status: 'cancelled' })
+      .where(eq(schedulingSessions.status, 'active'));
 
-  const [session] = await db
-    .insert(schedulingSessions)
-    .values({
-      candidateDays: JSON.stringify(candidateDays),
-      defaultTime,
-      plannedMovieId,
-      channelId,
-      status: 'active',
-    })
-    .returning();
+    const [session] = await tx
+      .insert(schedulingSessions)
+      .values({
+        candidateDays: JSON.stringify(candidateDays),
+        defaultTime,
+        plannedMovieId,
+        channelId,
+        status: 'active',
+      })
+      .returning();
 
-  return session;
+    return session;
+  });
 }
 
 /**
@@ -46,6 +48,20 @@ export async function getActiveSchedulingSession(): Promise<SchedulingSession | 
     .select()
     .from(schedulingSessions)
     .where(eq(schedulingSessions.status, 'active'))
+    .orderBy(desc(schedulingSessions.createdAt))
+    .limit(1);
+
+  return results[0] || null;
+}
+
+/**
+ * Retrieves the most recent active or finalized scheduling session.
+ */
+export async function getLatestSchedulingSession(): Promise<SchedulingSession | null> {
+  const results = await db
+    .select()
+    .from(schedulingSessions)
+    .where(or(eq(schedulingSessions.status, 'active'), eq(schedulingSessions.status, 'finalized')))
     .orderBy(desc(schedulingSessions.createdAt))
     .limit(1);
 
@@ -73,6 +89,16 @@ export async function updateSessionMessageId(id: number, messageId: string): Pro
     .update(schedulingSessions)
     .set({ messageId })
     .where(eq(schedulingSessions.id, id));
+}
+
+/**
+ * Updates the planned movie ID associated with a scheduling session.
+ */
+export async function updateSessionPlannedMovie(sessionId: number, plannedMovieId: number): Promise<void> {
+  await db
+    .update(schedulingSessions)
+    .set({ plannedMovieId })
+    .where(eq(schedulingSessions.id, sessionId));
 }
 
 /**
@@ -109,13 +135,13 @@ export async function toggleUserAvailability(
   userName: string,
   day: string
 ): Promise<ParsedVote[]> {
-  const existingVote = await db
+  const existingRecords = await db
     .select()
     .from(availabilityVotes)
-    .where(eq(availabilityVotes.sessionId, sessionId))
-    .all();
+    .where(and(eq(availabilityVotes.sessionId, sessionId), eq(availabilityVotes.userId, userId)))
+    .limit(1);
 
-  const userRecord = existingVote.find(v => v.userId === userId);
+  const userRecord = existingRecords[0];
   let currentDays: string[] = [];
 
   if (userRecord) {
@@ -143,43 +169,54 @@ export async function toggleUserAvailability(
     }
   }
 
-  if (userRecord) {
-    await db
-      .update(availabilityVotes)
-      .set({
-        selectedDays: JSON.stringify(currentDays),
-        userName,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(availabilityVotes.id, userRecord.id));
-  } else {
-    await db.insert(availabilityVotes).values({
+  await db
+    .insert(availabilityVotes)
+    .values({
       sessionId,
       userId,
       userName,
       selectedDays: JSON.stringify(currentDays),
+      updatedAt: new Date().toISOString(),
+    })
+    .onConflictDoUpdate({
+      target: [availabilityVotes.sessionId, availabilityVotes.userId],
+      set: {
+        selectedDays: JSON.stringify(currentDays),
+        userName,
+        updatedAt: new Date().toISOString(),
+      },
     });
-  }
 
   return getSessionVotes(sessionId);
 }
 
 /**
- * Finalizes a scheduling session with the chosen day and time.
+ * Finalizes or modifies a scheduling session with the chosen day, time, and Discord event info.
  */
 export async function finalizeSchedulingSession(
   sessionId: number,
   winningDay: string,
-  timeSlot?: string
+  timeSlot?: string,
+  discordEventId?: string | null,
+  scheduledStartTime?: string | null
 ): Promise<SchedulingSession | null> {
   const slot = timeSlot ? `${winningDay} @ ${timeSlot}` : winningDay;
 
+  const updateData: Partial<SchedulingSession> = {
+    status: 'finalized',
+    finalizedSlot: slot,
+  };
+
+  if (discordEventId !== undefined) {
+    updateData.discordEventId = discordEventId;
+  }
+  if (scheduledStartTime !== undefined) {
+    updateData.scheduledStartTime = scheduledStartTime;
+  }
+
   const [finalized] = await db
     .update(schedulingSessions)
-    .set({
-      status: 'finalized',
-      finalizedSlot: slot,
-    })
+    .set(updateData)
     .where(eq(schedulingSessions.id, sessionId))
     .returning();
 
@@ -187,7 +224,7 @@ export async function finalizeSchedulingSession(
 }
 
 /**
- * Cancels an active scheduling session.
+ * Cancels a scheduling session.
  */
 export async function cancelSchedulingSession(sessionId: number): Promise<void> {
   await db

@@ -23,6 +23,9 @@ describe('Rating Parser', () => {
     expect(parseRating('8/10')).toEqual({ valid: true, rating: 8 });
     expect(parseRating('8.5/10')).toEqual({ valid: true, rating: 8.5 });
     expect(parseRating('9.5/10.0')).toEqual({ valid: true, rating: 9.5 });
+    expect(parseRating('8 / 10')).toEqual({ valid: true, rating: 8 });
+    expect(parseRating('8.5 / 10')).toEqual({ valid: true, rating: 8.5 });
+    expect(parseRating('8,5 / 10')).toEqual({ valid: true, rating: 8.5 });
   });
 
   it('rejects numbers outside the 0.0 to 10.0 range', () => {

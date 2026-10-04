@@ -14,6 +14,8 @@ export const movies = sqliteTable('movies', {
   suggestedByUsername: text('suggested_by_username').notNull(),
   createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
   watchedAt: text('watched_at'),
+  ratingMessageId: text('rating_message_id'),
+  ratingChannelId: text('rating_channel_id'),
 });
 
 export const attendance = sqliteTable(
@@ -56,6 +58,8 @@ export const schedulingSessions = sqliteTable('scheduling_sessions', {
   messageId: text('message_id'),
   channelId: text('channel_id'),
   finalizedSlot: text('finalized_slot'),
+  discordEventId: text('discord_event_id'),
+  scheduledStartTime: text('scheduled_start_time'),
   createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
 });
 

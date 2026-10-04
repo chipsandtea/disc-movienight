@@ -1,6 +1,7 @@
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Guild, TextChannel } from 'discord.js';
 import { Movie } from '../db/schema.js';
 import { WatchedMovieSummary, UserStatsResult } from '../services/movie.service.js';
+import { RatingStatusResult } from '../services/rating.service.js';
 
 /**
  * Resolves the configured movie channel by snowflake ID, name, or #name (case-insensitive).
@@ -39,10 +40,14 @@ export function buildMovieEmbed(movie: Movie, titlePrefix: string = '🎬 Movie'
       { name: '📌 Status', value: `\`${movie.status.toUpperCase()}\``, inline: true }
     );
 
-  if (movie.imdbId) {
+  const links: string[] = [];
+  if (movie.imdbId) links.push(`[IMDb](https://www.imdb.com/title/${movie.imdbId}/)`);
+  if (movie.tmdbId) links.push(`[TMDB](https://www.themoviedb.org/movie/${movie.tmdbId})`);
+
+  if (links.length > 0) {
     embed.addFields({
       name: '🔗 Links',
-      value: `[IMDb](https://www.imdb.com/title/${movie.imdbId}/) • [TMDB](https://www.themoviedb.org/movie/${movie.tmdbId})`,
+      value: links.join(' • '),
       inline: false,
     });
   }
@@ -84,9 +89,13 @@ export function buildScheduleEmbed(
   // Group voters by day
   for (const day of candidateDays) {
     const availableUsers = votes.filter(v => v.selectedDays.includes(day));
-    const userList = availableUsers.length > 0
+    let userList = availableUsers.length > 0
       ? availableUsers.map(u => `<@${u.userId}>`).join(', ')
       : '_No votes yet_';
+
+    if (userList.length > 1000) {
+      userList = userList.slice(0, 995) + '...';
+    }
 
     embed.addFields({
       name: `${day} (${availableUsers.length} available)`,
@@ -97,9 +106,13 @@ export function buildScheduleEmbed(
 
   const cannotMakeItUsers = votes.filter(v => v.selectedDays.includes('NONE'));
   if (cannotMakeItUsers.length > 0) {
+    let cantMakeItList = cannotMakeItUsers.map(u => `<@${u.userId}>`).join(', ');
+    if (cantMakeItList.length > 1000) {
+      cantMakeItList = cantMakeItList.slice(0, 995) + '...';
+    }
     embed.addFields({
       name: `❌ Cannot Make It (${cannotMakeItUsers.length})`,
-      value: cannotMakeItUsers.map(u => `<@${u.userId}>`).join(', '),
+      value: cantMakeItList,
       inline: false,
     });
   }
@@ -119,10 +132,16 @@ export function buildRevealEmbed(
   submittedRatings: { userId: string; userName: string; rating: number; reviewText: string | null }[],
   unratedAttendees: { userId: string; userName: string }[]
 ): EmbedBuilder {
+  const synopsis = movie.overview
+    ? movie.overview.length > 200
+      ? `*${movie.overview.slice(0, 197)}...*`
+      : `*${movie.overview}*`
+    : 'No synopsis.';
+
   const embed = new EmbedBuilder()
     .setTitle(`🏆 MOVIE NIGHT RESULTS: ${movie.title} (${movie.releaseYear || 'N/A'})`)
     .setColor(0x10B981)
-    .setDescription(movie.overview ? `*${movie.overview.slice(0, 200)}...*` : 'No synopsis.')
+    .setDescription(synopsis)
     .addFields(
       {
         name: '⭐ Group Average Score',
@@ -147,11 +166,19 @@ export function buildRevealEmbed(
     const highest = sorted[0];
     const lowest = sorted[sorted.length - 1];
 
-    embed.addFields({
-      name: '🎯 Score Highlights',
-      value: `👑 **Critic\'s Choice**: <@${highest.userId}> gave **${highest.rating}/10**\n📉 **The Tough Crowd**: <@${lowest.userId}> gave **${lowest.rating}/10**`,
-      inline: false,
-    });
+    if (highest.rating === lowest.rating) {
+      embed.addFields({
+        name: '🎯 Score Highlights',
+        value: `🤝 **Unanimous Consensus**: Everyone rated this movie **${highest.rating}/10**!`,
+        inline: false,
+      });
+    } else {
+      embed.addFields({
+        name: '🎯 Score Highlights',
+        value: `👑 **Critic's Choice**: <@${highest.userId}> gave **${highest.rating}/10**\n📉 **The Tough Crowd**: <@${lowest.userId}> gave **${lowest.rating}/10**`,
+        inline: false,
+      });
+    }
   }
 
   // Individual Reviews (Chunked to respect Discord 1024-char field limit)
@@ -217,7 +244,7 @@ export function buildUserStatsEmbed(userMention: string, stats: UserStatsResult)
       }
     );
 
-  if (stats.highestRated && stats.lowestRated) {
+  if (stats.highestRated && stats.lowestRated && stats.ratingsGivenCount >= 2) {
     embed.addFields({
       name: '🎬 Personal Favorites & Lows',
       value: `❤️ **Favorite**: ${stats.highestRated.title} (${stats.highestRated.rating}/10)\n💔 **Lowest**: ${stats.lowestRated.title} (${stats.lowestRated.rating}/10)`,
@@ -235,12 +262,62 @@ export function buildUserStatsEmbed(userMention: string, stats: UserStatsResult)
   });
 
   if (recs.watchedMovies.length > 0) {
-    const list = recs.watchedMovies.map(m => `• **${m.title}**: ${m.groupScore !== null ? `⭐ ${m.groupScore}/10` : 'Not scored'}`).join('\n');
+    let list = recs.watchedMovies.map(m => `• **${m.title}**: ${m.groupScore !== null ? `⭐ ${m.groupScore}/10` : 'Not scored'}`).join('\n');
+    if (list.length > 1000) {
+      list = list.slice(0, 995) + '...';
+    }
     embed.addFields({
       name: '🎥 Watched Recommendations',
       value: list,
       inline: false,
     });
+  }
+
+  return embed;
+}
+
+/**
+ * Builds the real-time live rating progress embed shown in #shows-n-movies.
+ */
+export function buildRatingProgressEmbed(progress: RatingStatusResult): EmbedBuilder {
+  const percent = progress.totalAttendees > 0
+    ? Math.round((progress.submittedCount / progress.totalAttendees) * 100)
+    : 0;
+
+  const submittedList = progress.submittedUsers.length > 0
+    ? progress.submittedUsers.map(u => `✅ <@${u.userId}>`).join(', ')
+    : '_None yet_';
+
+  const pendingList = progress.pendingUsers.length > 0
+    ? progress.pendingUsers.map(u => `⏳ <@${u.userId}>`).join(', ')
+    : '🎉 _Everyone has submitted!_';
+
+  const isAllSubmitted = progress.submittedCount === progress.totalAttendees && progress.totalAttendees > 0;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🎬 Rating Collection: ${progress.movie.title}`)
+    .setColor(isAllSubmitted ? 0x10B981 : 0x3B82F6)
+    .setDescription(
+      `Hope everyone enjoyed **${progress.movie.title}**!\n` +
+      `Click the button below to submit your rating (0.0 to 10.0) and optional review.\n` +
+      `*Ratings and reviews remain strictly confidential until the grand reveal!*`
+    )
+    .addFields(
+      {
+        name: `📊 Live Progress (${progress.submittedCount} / ${progress.totalAttendees} — ${percent}%)`,
+        value: `**Submitted**:\n${submittedList}\n\n**Pending**:\n${pendingList}`,
+        inline: false,
+      }
+    )
+    .setFooter({
+      text: isAllSubmitted
+        ? '🎉 All attendees have submitted! Run /movie finalize-ratings to reveal results.'
+        : '🔄 Live status: Updates automatically as reviews roll in!',
+    })
+    .setTimestamp();
+
+  if (progress.movie.posterPath) {
+    embed.setThumbnail(progress.movie.posterPath);
   }
 
   return embed;

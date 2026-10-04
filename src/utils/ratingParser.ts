@@ -23,8 +23,8 @@ export function parseRating(input: string): RatingParseResult {
     return { valid: false, error: 'Rating cannot be empty.' };
   }
 
-  // Handle "/10" suffix (e.g. "8.5/10")
-  let sanitized = trimmed.replace(/\/10(\.0+)?$/i, '').trim();
+  // Handle "/10" suffix with optional whitespace (e.g. "8.5/10", "8.5 / 10")
+  let sanitized = trimmed.replace(/\s*\/\s*10(\.0+)?$/i, '').trim();
 
   // Normalize commas to dots (e.g. "8,5" -> "8.5")
   sanitized = sanitized.replace(',', '.');

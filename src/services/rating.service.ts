@@ -2,8 +2,9 @@ import { Client, TextChannel, ActionRowBuilder, ButtonBuilder, ButtonStyle, Embe
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { movies, attendance, ratings, Movie, Rating } from '../db/schema.js';
-import { buildMovieEmbed, buildRevealEmbed } from '../utils/discordHelpers.js';
+import { buildMovieEmbed, buildRevealEmbed, buildRatingProgressEmbed } from '../utils/discordHelpers.js';
 import { getAttendeesForMovie } from './attendance.service.js';
+import { updateMovieRatingMessage } from './movie.service.js';
 
 export interface RatingStatusResult {
   movie: Movie;
@@ -22,20 +23,21 @@ export interface FinalizeResult {
 
 /**
  * Dispatches rating forms to attendees via DM and simultaneously posts an in-channel
- * fallback button in #shows-n-movies with an ephemeral modal.
+ * live progress card in #shows-n-movies with an ephemeral modal button.
  */
 export async function dispatchRatingRequests(
   client: Client,
   movie: Movie,
   attendees: { userId: string; userName: string }[],
   targetChannel?: TextChannel | null
-): Promise<{ dmsSent: number; dmsFailed: number }> {
+): Promise<{ dmsSent: number; dmsFailed: number; ratingMessageId?: string }> {
   let dmsSent = 0;
   let dmsFailed = 0;
+  let ratingMessageId: string | undefined;
 
   const rateButton = new ButtonBuilder()
     .setCustomId(`rate:open:${movie.id}`)
-    .setLabel('⭐ Submit Your Rating & Review')
+    .setLabel('⭐ Submit / Edit Your Rating')
     .setStyle(ButtonStyle.Primary);
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(rateButton);
@@ -60,22 +62,51 @@ export async function dispatchRatingRequests(
     }
   }
 
-  // 2. Post in-channel fallback in #shows-n-movies
+  // 2. Post Live Rating Dashboard in #shows-n-movies
   if (targetChannel) {
-    const channelEmbed = new EmbedBuilder()
-      .setTitle(`🎬 That's a wrap on ${movie.title}!`)
-      .setColor(0x10B981)
-      .setDescription(
-        `Rating requests have been sent to DMs for all attendees.\n\n**Have DMs disabled?** Click the button below to submit your rating right here in the channel! *(Responses are submitted privately through an ephemeral modal)*`
-      );
+    const progress = await getRatingProgress(movie.id);
+    const progressEmbed = progress
+      ? buildRatingProgressEmbed(progress)
+      : new EmbedBuilder()
+          .setTitle(`🎬 Rating Collection: ${movie.title}`)
+          .setColor(0x3B82F6)
+          .setDescription(`Rating requests have been dispatched to DMs for all attendees.\nHave DMs disabled? Click the button below to submit privately here!`);
 
-    await targetChannel.send({
-      embeds: [channelEmbed],
+    const channelMessage = await targetChannel.send({
+      embeds: [progressEmbed],
       components: [row],
     });
+
+    ratingMessageId = channelMessage.id;
+    await updateMovieRatingMessage(movie.id, channelMessage.id, targetChannel.id);
   }
 
-  return { dmsSent, dmsFailed };
+  return { dmsSent, dmsFailed, ratingMessageId };
+}
+
+/**
+ * Refreshes the live rating progress card in the designated channel
+ * whenever a rating is submitted or updated.
+ */
+export async function updateLiveRatingProgressMessage(client: Client, movieId: number): Promise<void> {
+  const [movie] = await db.select().from(movies).where(eq(movies.id, movieId)).limit(1);
+  if (!movie || !movie.ratingMessageId || !movie.ratingChannelId) return;
+
+  try {
+    const channel = await client.channels.fetch(movie.ratingChannelId);
+    if (!channel || !channel.isTextBased()) return;
+
+    const message = await (channel as TextChannel).messages.fetch(movie.ratingMessageId);
+    if (!message) return;
+
+    const progress = await getRatingProgress(movieId);
+    if (!progress) return;
+
+    const updatedEmbed = buildRatingProgressEmbed(progress);
+    await message.edit({ embeds: [updatedEmbed] });
+  } catch (err: any) {
+    console.warn('[Rating] Could not update live rating message:', err.message);
+  }
 }
 
 /**
@@ -88,43 +119,25 @@ export async function recordUserRating(
   score: number,
   reviewText?: string
 ): Promise<{ isUpdate: boolean; rating: Rating }> {
-  // Ensure user is recorded in attendance table
-  const existingAttendance = await db
-    .select()
-    .from(attendance)
-    .where(and(eq(attendance.movieId, movieId), eq(attendance.userId, userId)))
-    .limit(1);
-
-  if (existingAttendance.length === 0) {
-    await db.insert(attendance).values({
+  // Ensure user is recorded in attendance table idempotently
+  await db
+    .insert(attendance)
+    .values({
       movieId,
       userId,
       userName,
-    }).catch(() => {});
-  }
+    })
+    .onConflictDoNothing();
 
   const existing = await db
-    .select()
+    .select({ id: ratings.id })
     .from(ratings)
     .where(and(eq(ratings.movieId, movieId), eq(ratings.userId, userId)))
     .limit(1);
 
-  if (existing.length > 0) {
-    const [updated] = await db
-      .update(ratings)
-      .set({
-        rating: score,
-        reviewText: reviewText || null,
-        userName,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(ratings.id, existing[0].id))
-      .returning();
+  const isUpdate = existing.length > 0;
 
-    return { isUpdate: true, rating: updated };
-  }
-
-  const [inserted] = await db
+  const [rating] = await db
     .insert(ratings)
     .values({
       movieId,
@@ -133,9 +146,18 @@ export async function recordUserRating(
       rating: score,
       reviewText: reviewText || null,
     })
+    .onConflictDoUpdate({
+      target: [ratings.movieId, ratings.userId],
+      set: {
+        rating: score,
+        reviewText: reviewText || null,
+        userName,
+        updatedAt: new Date().toISOString(),
+      },
+    })
     .returning();
 
-  return { isUpdate: false, rating: inserted };
+  return { isUpdate, rating };
 }
 
 /**
@@ -172,9 +194,9 @@ export async function getRatingProgress(movieId: number): Promise<RatingStatusRe
 
 /**
  * Finalizes ratings for a movie: updates status to 'watched', records watchedAt,
- * and compiles the grand reveal dataset.
+ * disables the live rating card, and compiles the grand reveal dataset.
  */
-export async function finalizeMovieRatings(movieId: number): Promise<FinalizeResult | null> {
+export async function finalizeMovieRatings(movieId: number, client?: Client): Promise<FinalizeResult | null> {
   const target = await db.select().from(movies).where(eq(movies.id, movieId)).limit(1);
   if (target.length === 0) return null;
 
@@ -189,6 +211,27 @@ export async function finalizeMovieRatings(movieId: number): Promise<FinalizeRes
     })
     .where(eq(movies.id, movieId))
     .returning();
+
+  // Disable live rating card buttons and update footer
+  if (client && watchedMovie.ratingMessageId && watchedMovie.ratingChannelId) {
+    try {
+      const channel = await client.channels.fetch(watchedMovie.ratingChannelId);
+      if (channel && channel.isTextBased()) {
+        const msg = await (channel as TextChannel).messages.fetch(watchedMovie.ratingMessageId);
+        if (msg) {
+          const progress = await getRatingProgress(movieId);
+          if (progress) {
+            const finalEmbed = buildRatingProgressEmbed(progress)
+              .setTitle(`🎬 Rating Collection: ${watchedMovie.title} [FINALIZED]`)
+              .setFooter({ text: '✅ Ratings finalized! Official results revealed below.' });
+            await msg.edit({ embeds: [finalEmbed], components: [] });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Rating] Could not update completed rating message:', e);
+    }
+  }
 
   const submitted = await db
     .select()

@@ -1,5 +1,7 @@
 node_modules/
 dist/
 .env
+.env.example
 movienight.db*
+test.db*
 *.log
