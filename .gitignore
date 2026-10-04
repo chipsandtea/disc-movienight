@@ -5,3 +5,10 @@ dist/
 movienight.db*
 test.db*
 *.log
+
+# Historical data migration & participant PII
+migration*.json
+!migration*.example.json
+data/historical/
+*.csv
+docs/HISTORICAL_MIGRATION_GUIDE.md
