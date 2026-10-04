@@ -1,7 +1,16 @@
 import { eq, desc, and, sql, inArray } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { movies, attendance, ratings, Movie, NewMovie } from '../db/schema.js';
+import { movies, attendance, ratings, schedulingSessions, Movie, NewMovie } from '../db/schema.js';
 import { TmdbMovieDetails } from './tmdb.service.js';
+
+export interface DeleteMovieResult {
+  success: boolean;
+  error?: string;
+  movie?: Movie;
+  deletedRatingsCount: number;
+  deletedAttendanceCount: number;
+  unlinkedSchedulingSession: boolean;
+}
 
 export interface AddMovieResult {
   status: 'added' | 'already_watched' | 'already_in_backlog';
@@ -208,6 +217,67 @@ export async function setPlannedMovie(movieId: number): Promise<Movie | null> {
 }
 
 /**
+ * Permanently deletes a movie entry and cascades cleanup across ratings,
+ * attendance, and active scheduling sessions within an atomic transaction.
+ */
+export async function deleteMovie(movieId: number): Promise<DeleteMovieResult> {
+  return await db.transaction(async (tx) => {
+    const [target] = await tx.select().from(movies).where(eq(movies.id, movieId)).limit(1);
+    if (!target) {
+      return {
+        success: false,
+        error: 'Movie not found.',
+        deletedRatingsCount: 0,
+        deletedAttendanceCount: 0,
+        unlinkedSchedulingSession: false,
+      };
+    }
+
+    // 1. Unlink any scheduling session referencing this movie
+    const sessions = await tx
+      .select({ id: schedulingSessions.id })
+      .from(schedulingSessions)
+      .where(eq(schedulingSessions.plannedMovieId, movieId));
+    const unlinked = sessions.length > 0;
+    if (unlinked) {
+      await tx
+        .update(schedulingSessions)
+        .set({ plannedMovieId: null })
+        .where(eq(schedulingSessions.plannedMovieId, movieId));
+    }
+
+    // 2. Count and delete associated ratings
+    const ratingRows = await tx
+      .select({ id: ratings.id })
+      .from(ratings)
+      .where(eq(ratings.movieId, movieId));
+    if (ratingRows.length > 0) {
+      await tx.delete(ratings).where(eq(ratings.movieId, movieId));
+    }
+
+    // 3. Count and delete associated attendance
+    const attendanceRows = await tx
+      .select({ id: attendance.id })
+      .from(attendance)
+      .where(eq(attendance.movieId, movieId));
+    if (attendanceRows.length > 0) {
+      await tx.delete(attendance).where(eq(attendance.movieId, movieId));
+    }
+
+    // 4. Delete the movie record
+    await tx.delete(movies).where(eq(movies.id, movieId));
+
+    return {
+      success: true,
+      movie: target,
+      deletedRatingsCount: ratingRows.length,
+      deletedAttendanceCount: attendanceRows.length,
+      unlinkedSchedulingSession: unlinked,
+    };
+  });
+}
+
+/**
  * Removes a movie from the backlog. Allowed if requester is original suggester or an admin.
  */
 export async function removeMovieFromBacklog(
@@ -225,8 +295,8 @@ export async function removeMovieFromBacklog(
     return { success: false, error: 'Only the member who suggested this movie or an admin can remove it.' };
   }
 
-  await db.delete(movies).where(eq(movies.id, movieId));
-  return { success: true, movie };
+  const deleteResult = await deleteMovie(movieId);
+  return { success: deleteResult.success, error: deleteResult.error, movie: deleteResult.movie };
 }
 
 /**
@@ -301,7 +371,9 @@ export async function getUserStats(userId: string): Promise<UserStatsResult> {
 
     const sorted = [...userRatings].sort((a, b) => b.rating - a.rating);
     highestRated = { title: sorted[0].title, rating: sorted[0].rating };
-    lowestRated = { title: sorted[sorted.length - 1].title, rating: sorted[sorted.length - 1].rating };
+    if (userRatings.length >= 2 && sorted[0].rating !== sorted[sorted.length - 1].rating) {
+      lowestRated = { title: sorted[sorted.length - 1].title, rating: sorted[sorted.length - 1].rating };
+    }
   }
 
   // 3. Recommendations track record

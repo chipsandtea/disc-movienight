@@ -56,7 +56,7 @@ export async function dispatchRatingRequests(
         components: [row],
       });
       dmsSent++;
-    } catch (err: any) {
+    } catch {
       // 50007: Cannot send messages to this user (DMs disabled)
       dmsFailed++;
     }
@@ -104,8 +104,9 @@ export async function updateLiveRatingProgressMessage(client: Client, movieId: n
 
     const updatedEmbed = buildRatingProgressEmbed(progress);
     await message.edit({ embeds: [updatedEmbed] });
-  } catch (err: any) {
-    console.warn('[Rating] Could not update live rating message:', err.message);
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.warn('[Rating] Could not update live rating message:', errorMsg);
   }
 }
 

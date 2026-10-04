@@ -1,7 +1,7 @@
 import { ButtonInteraction, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { getSchedulingSessionById, toggleUserAvailability, getSessionVotes } from '../services/schedule.service.js';
 import { getMovieById } from '../services/movie.service.js';
-import { buildScheduleEmbed } from '../utils/discordHelpers.js';
+import { buildScheduleEmbed, getInteractionDisplayName } from '../utils/discordHelpers.js';
 
 /**
  * Handles clicks on weekly availability buttons.
@@ -28,9 +28,7 @@ export async function handleScheduleButtonClick(interaction: ButtonInteraction):
   }
 
   const userId = interaction.user.id;
-  const userName = interaction.member && 'displayName' in interaction.member
-    ? (interaction.member.displayName as string)
-    : interaction.user.username;
+  const userName = getInteractionDisplayName(interaction);
 
   // Toggle availability in SQLite (returns updated votes)
   const votes = await toggleUserAvailability(sessionId, userId, userName, day);

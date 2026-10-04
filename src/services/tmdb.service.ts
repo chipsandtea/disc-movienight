@@ -45,7 +45,7 @@ export async function searchMovies(query: string): Promise<TmdbMovieSearchResult
 
   try {
     const url = `${TMDB_BASE_URL}/search/movie?api_key=${encodeURIComponent(config.tmdbApiKey)}&query=${encodeURIComponent(trimmed)}&include_adult=false`;
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!response.ok) {
       console.error(`[TMDB] Search error: HTTP ${response.status} ${response.statusText}`);
       return [];
@@ -69,7 +69,7 @@ export async function getMovieDetails(tmdbId: number | string): Promise<TmdbMovi
 
   try {
     const url = `${TMDB_BASE_URL}/movie/${encodeURIComponent(tmdbId)}?api_key=${encodeURIComponent(config.tmdbApiKey)}&append_to_response=external_ids`;
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!response.ok) {
       if (response.status === 404) return null;
       throw new Error(`TMDB HTTP error ${response.status}`);
@@ -117,7 +117,7 @@ export async function findByImdbId(imdbId: string): Promise<TmdbMovieDetails | n
   try {
     const normalized = imdbId.toLowerCase();
     const url = `${TMDB_BASE_URL}/find/${encodeURIComponent(normalized)}?api_key=${encodeURIComponent(config.tmdbApiKey)}&external_source=imdb_id`;
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!response.ok) return null;
 
     const data = await response.json() as {

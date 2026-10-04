@@ -1,7 +1,51 @@
-import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Guild, TextChannel } from 'discord.js';
+import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Guild, TextChannel, Client } from 'discord.js';
 import { Movie } from '../db/schema.js';
 import { WatchedMovieSummary, UserStatsResult } from '../services/movie.service.js';
 import { RatingStatusResult } from '../services/rating.service.js';
+
+/**
+ * Safely removes components (buttons, select menus) from a Discord message,
+ * optionally updating its text content.
+ */
+export async function disableMessageComponents(
+  client: Client,
+  channelId?: string | null,
+  messageId?: string | null,
+  noticeContent?: string
+): Promise<void> {
+  if (!channelId || !messageId) return;
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (channel && channel.isTextBased()) {
+      const msg = await (channel as TextChannel).messages.fetch(messageId);
+      if (msg) {
+        const payload: { components: never[]; content?: string } = { components: [] };
+        if (noticeContent) payload.content = noticeContent;
+        await msg.edit(payload);
+      }
+    }
+  } catch {
+    // Silently ignore if message was deleted or inaccessible
+  }
+}
+
+/**
+ * Extracts a user's server nickname / display name from an interaction,
+ * gracefully falling back to username.
+ */
+export function getInteractionDisplayName(
+  interaction: { member?: unknown; user: { username: string } },
+  fallbackUser?: { username: string; displayName?: string }
+): string {
+  if (fallbackUser) {
+    return fallbackUser.displayName || fallbackUser.username;
+  }
+  if (interaction.member && typeof interaction.member === 'object' && 'displayName' in interaction.member) {
+    const name = (interaction.member as { displayName?: unknown }).displayName;
+    if (typeof name === 'string' && name) return name;
+  }
+  return interaction.user.username;
+}
 
 /**
  * Resolves the configured movie channel by snowflake ID, name, or #name (case-insensitive).
@@ -244,10 +288,16 @@ export function buildUserStatsEmbed(userMention: string, stats: UserStatsResult)
       }
     );
 
-  if (stats.highestRated && stats.lowestRated && stats.ratingsGivenCount >= 2) {
+  if (stats.highestRated && stats.lowestRated) {
     embed.addFields({
       name: '🎬 Personal Favorites & Lows',
       value: `❤️ **Favorite**: ${stats.highestRated.title} (${stats.highestRated.rating}/10)\n💔 **Lowest**: ${stats.lowestRated.title} (${stats.lowestRated.rating}/10)`,
+      inline: false,
+    });
+  } else if (stats.highestRated) {
+    embed.addFields({
+      name: '🎬 Personal Favorite',
+      value: `❤️ **Favorite**: ${stats.highestRated.title} (${stats.highestRated.rating}/10)`,
       inline: false,
     });
   }

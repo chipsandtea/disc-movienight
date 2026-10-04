@@ -54,7 +54,7 @@ export const schedulingSessions = sqliteTable('scheduling_sessions', {
   status: text('status', { enum: ['active', 'finalized', 'cancelled'] }).notNull().default('active'),
   candidateDays: text('candidate_days').notNull(), // JSON array string e.g. '["Friday", "Saturday", "Sunday"]'
   defaultTime: text('default_time').notNull().default('8:00 PM'),
-  plannedMovieId: integer('planned_movie_id').references(() => movies.id),
+  plannedMovieId: integer('planned_movie_id').references(() => movies.id, { onDelete: 'set null' }),
   messageId: text('message_id'),
   channelId: text('channel_id'),
   finalizedSlot: text('finalized_slot'),

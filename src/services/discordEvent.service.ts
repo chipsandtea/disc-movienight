@@ -122,8 +122,9 @@ export async function deleteDiscordEvent(guild: Guild, eventId: string): Promise
       await existing.delete();
       return true;
     }
-  } catch (err: any) {
-    console.warn(`[EventSync] Could not delete event ${eventId}:`, err.message);
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.warn(`[EventSync] Could not delete event ${eventId}:`, errorMsg);
   }
 
   return false;

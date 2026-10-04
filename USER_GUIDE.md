@@ -139,6 +139,16 @@ Reassign who suggested a movie in the backlog or watch history.
   /movie set-suggester movie: [#12] Spirited Away (2001) user: @Sam
   ```
 
+### `/movie delete`
+Permanently delete a movie entry from the database (backlog, planned, or watched). Cascades cleanup across ratings, attendance records, and active scheduling sessions.
+- **Permissions**: `[Admin Only]`
+- **Options**:
+  - `movie` *(Required)*: Select the movie to delete via autocomplete (displays `[#ID] Title (Year) [STATUS]`) or by typing the exact title.
+- **Example**:
+  ```
+  /movie delete movie: [#12] Test Sci-Fi Feature (2025) [WATCHED]
+  ```
+
 ---
 
 ## 🏆 4. Attendance, Rating & Finalization

@@ -4,6 +4,7 @@ import {
   ChatInputCommandInteraction,
   ButtonInteraction,
   UserSelectMenuInteraction,
+  GuildMemberRoleManager,
 } from 'discord.js';
 import { config } from '../config.js';
 
@@ -34,8 +35,22 @@ export function isUserAdmin(interaction: InteractionWithMember): boolean {
       if (Array.isArray(roles) && roles.includes(config.adminRoleId)) {
         return true;
       }
-      if ('cache' in roles && typeof (roles.cache as any).has === 'function' && (roles.cache as any).has(config.adminRoleId)) {
-        return true;
+      if (roles instanceof GuildMemberRoleManager) {
+        if (roles.cache.has(config.adminRoleId)) {
+          return true;
+        }
+      } else if (
+        typeof roles === 'object' &&
+        'cache' in roles &&
+        typeof roles.cache === 'object' &&
+        roles.cache !== null &&
+        'has' in roles.cache &&
+        typeof (roles.cache as { has: unknown }).has === 'function'
+      ) {
+        const cache = roles.cache as { has: (key: string) => boolean };
+        if (cache.has(config.adminRoleId)) {
+          return true;
+        }
       }
     }
   }

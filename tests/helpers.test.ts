@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { Guild, PermissionsBitField } from 'discord.js';
+import { Movie } from '../src/db/schema.js';
+import { isUserAdmin } from '../src/utils/auth.js';
 import { formatWheelExport } from '../src/utils/wheelHelper.js';
 import { formatRuntime, resolveMovieChannel, buildRevealEmbed } from '../src/utils/discordHelpers.js';
 
@@ -45,14 +48,14 @@ describe('Discord Helpers', () => {
   });
 
   it('resolves channel by name with or without hash, and by ID', () => {
-    const mockGuild: any = {
+    const mockGuild = {
       channels: {
         cache: [
           { id: '123456789', name: 'shows-n-movies', isTextBased: () => true },
           { id: '987654321', name: 'general', isTextBased: () => true },
         ],
       },
-    };
+    } as unknown as Guild;
 
     expect(resolveMovieChannel(mockGuild, 'shows-n-movies')?.id).toBe('123456789');
     expect(resolveMovieChannel(mockGuild, '#shows-n-movies')?.id).toBe('123456789');
@@ -62,14 +65,21 @@ describe('Discord Helpers', () => {
   });
 
   it('chunks reviews in buildRevealEmbed to ensure no field exceeds Discord 1024 char limit', () => {
-    const mockMovie: any = {
+    const mockMovie: Movie = {
       id: 1,
       title: 'Dune: Part Two',
       releaseYear: 2024,
       runtimeMinutes: 166,
       overview: 'Paul Atreides unites with Chani and the Fremen.',
       suggestedByUserId: 'user1',
+      suggestedByUsername: 'User 1',
+      tmdbId: 693134,
+      posterPath: 'https://image.tmdb.org/t/p/w500/path.jpg',
       status: 'watched',
+      createdAt: new Date().toISOString(),
+      watchedAt: new Date().toISOString(),
+      ratingMessageId: null,
+      ratingChannelId: null,
     };
 
     // Create 10 long reviews (200 chars each = 2000+ chars total)
@@ -96,27 +106,24 @@ describe('Discord Helpers', () => {
 });
 
 describe('Auth Helper', () => {
-  it('correctly determines admin permissions via Discord permissions or roles', async () => {
-    const { isUserAdmin } = await import('../src/utils/auth.js');
-    const { PermissionsBitField } = await import('discord.js');
-
+  it('correctly determines admin permissions via Discord permissions or roles', () => {
     // 1. User with Administrator permission
-    const adminPermsInteraction: any = {
+    const adminPermsInteraction = {
       memberPermissions: new PermissionsBitField(PermissionsBitField.Flags.Administrator),
-    };
+    } as unknown as Parameters<typeof isUserAdmin>[0];
     expect(isUserAdmin(adminPermsInteraction)).toBe(true);
 
     // 2. User with ManageGuild permission
-    const manageGuildInteraction: any = {
+    const manageGuildInteraction = {
       memberPermissions: new PermissionsBitField(PermissionsBitField.Flags.ManageGuild),
-    };
+    } as unknown as Parameters<typeof isUserAdmin>[0];
     expect(isUserAdmin(manageGuildInteraction)).toBe(true);
 
     // 3. User with no special permissions
-    const regularInteraction: any = {
+    const regularInteraction = {
       memberPermissions: new PermissionsBitField(),
       member: { roles: [] },
-    };
+    } as unknown as Parameters<typeof isUserAdmin>[0];
     expect(isUserAdmin(regularInteraction)).toBe(false);
   });
 });

@@ -15,8 +15,8 @@ import {
   cancelSchedulingSession,
   updateSessionMessageId,
 } from '../services/schedule.service.js';
-import { getPlannedMovie } from '../services/movie.service.js';
-import { buildScheduleEmbed, formatRuntime } from '../utils/discordHelpers.js';
+import { getPlannedMovie, getMovieById } from '../services/movie.service.js';
+import { buildScheduleEmbed, formatRuntime, disableMessageComponents } from '../utils/discordHelpers.js';
 import { syncDiscordEvent, deleteDiscordEvent } from '../services/discordEvent.service.js';
 import { calculateEventDate } from '../utils/dateHelper.js';
 import { isUserAdmin } from '../utils/auth.js';
@@ -185,22 +185,10 @@ export const scheduleCommand = {
 
       const winningDay = interaction.options.getString('day', true);
       const timeOverride = interaction.options.getString('time') || session.defaultTime;
-      const plannedMovie = session.plannedMovieId ? await getPlannedMovie() : null;
+      const plannedMovie = session.plannedMovieId ? await getMovieById(session.plannedMovieId) : null;
 
       // Disable buttons on the original poll message if accessible
-      if (session.channelId && session.messageId) {
-        try {
-          const channel = await interaction.client.channels.fetch(session.channelId);
-          if (channel && channel.isTextBased()) {
-            const originalMsg = await channel.messages.fetch(session.messageId);
-            if (originalMsg) {
-              await originalMsg.edit({ components: [] });
-            }
-          }
-        } catch (e) {
-          console.warn('[Schedule] Could not disable buttons on original poll message:', e);
-        }
-      }
+      await disableMessageComponents(interaction.client, session.channelId, session.messageId);
 
       // Calculate target date for Discord Scheduled Event
       const targetDate = calculateEventDate(winningDay, timeOverride);
@@ -252,21 +240,11 @@ export const scheduleCommand = {
 
       const newDay = interaction.options.getString('day', true);
       const newTime = interaction.options.getString('time') || session.defaultTime;
-      const plannedMovie = session.plannedMovieId ? await getPlannedMovie() : null;
+      const plannedMovie = session.plannedMovieId ? await getMovieById(session.plannedMovieId) : null;
 
       // Disable buttons on any open poll message if it was still active
-      if (session.status === 'active' && session.channelId && session.messageId) {
-        try {
-          const channel = await interaction.client.channels.fetch(session.channelId);
-          if (channel && channel.isTextBased()) {
-            const originalMsg = await channel.messages.fetch(session.messageId);
-            if (originalMsg) {
-              await originalMsg.edit({ components: [] });
-            }
-          }
-        } catch (e) {
-          console.warn('[Schedule] Could not disable buttons on poll message during modify:', e);
-        }
+      if (session.status === 'active') {
+        await disableMessageComponents(interaction.client, session.channelId, session.messageId);
       }
 
       const targetDate = calculateEventDate(newDay, newTime);
@@ -324,19 +302,7 @@ export const scheduleCommand = {
       }
 
       // Disable poll buttons if message is accessible
-      if (session.channelId && session.messageId) {
-        try {
-          const channel = await interaction.client.channels.fetch(session.channelId);
-          if (channel && channel.isTextBased()) {
-            const originalMsg = await channel.messages.fetch(session.messageId);
-            if (originalMsg) {
-              await originalMsg.edit({ components: [] });
-            }
-          }
-        } catch (e) {
-          console.warn('[Schedule] Could not edit poll message on cancel:', e);
-        }
-      }
+      await disableMessageComponents(interaction.client, session.channelId, session.messageId);
 
       await cancelSchedulingSession(session.id);
 
@@ -363,7 +329,7 @@ export const scheduleCommand = {
         return;
       }
 
-      const plannedMovie = session.plannedMovieId ? await getPlannedMovie() : null;
+      const plannedMovie = session.plannedMovieId ? await getMovieById(session.plannedMovieId) : null;
 
       const embed = new EmbedBuilder()
         .setTitle('📅 Current Movie Night Schedule')

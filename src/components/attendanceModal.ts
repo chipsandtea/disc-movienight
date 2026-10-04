@@ -8,6 +8,7 @@ import {
   ButtonInteraction,
   UserSelectMenuInteraction,
   TextChannel,
+  Client,
 } from 'discord.js';
 import { Movie } from '../db/schema.js';
 import { CandidateAttendee, recordAttendance } from '../services/attendance.service.js';
@@ -30,7 +31,7 @@ const pendingConfirmations = new Map<string, PendingConfirmation>();
 
 async function executeAttendanceConfirmation(
   pending: PendingConfirmation,
-  client: any
+  client: Client
 ): Promise<{ count: number; progressEmbed: EmbedBuilder | null }> {
   const finalAttendees = Array.from(pending.attendees.entries()).map(([userId, userName]) => ({
     userId,
@@ -43,6 +44,33 @@ async function executeAttendanceConfirmation(
   const progressEmbed = progress ? buildRatingProgressEmbed(progress) : null;
 
   return { count: finalAttendees.length, progressEmbed };
+}
+
+function scheduleConfirmationTimer(
+  sessionKey: string,
+  interaction: ChatInputCommandInteraction | UserSelectMenuInteraction,
+  durationMs: number
+): NodeJS.Timeout {
+  return setTimeout(async () => {
+    const current = pendingConfirmations.get(sessionKey);
+    if (!current || current.resolved) return;
+
+    current.resolved = true;
+    pendingConfirmations.delete(sessionKey);
+
+    const { count, progressEmbed } = await executeAttendanceConfirmation(current, interaction.client);
+
+    try {
+      await interaction.editReply({
+        content: `✅ **Confirmation window completed.**\nConfirmed **${count}** attendees! Rating requests dispatched to DMs and #${current.targetChannel?.name || 'shows-n-movies'}.\n\n` +
+          `📊 *Live status below updates in real-time as reviews roll in:*`,
+        embeds: progressEmbed ? [progressEmbed] : [],
+        components: [],
+      });
+    } catch (e) {
+      console.error('[Attendance] Could not update ephemeral reply after timeout:', e);
+    }
+  }, durationMs);
 }
 
 /**
@@ -103,31 +131,7 @@ export async function startAttendanceConfirmation(
   });
 
   const sessionKey = `${interaction.guildId}:${movie.id}`;
-
-  const scheduleTimer = (durationMs: number) => {
-    return setTimeout(async () => {
-      const current = pendingConfirmations.get(sessionKey);
-      if (!current || current.resolved) return;
-
-      current.resolved = true;
-      pendingConfirmations.delete(sessionKey);
-
-      const { count, progressEmbed } = await executeAttendanceConfirmation(current, interaction.client);
-
-      try {
-        await interaction.editReply({
-          content: `✅ **Confirmation window elapsed.**\nConfirmed **${count}** attendees! Rating requests dispatched to DMs and #${targetChannel?.name || 'shows-n-movies'}.\n\n` +
-            `📊 *Live status below updates in real-time as reviews roll in:*`,
-          embeds: progressEmbed ? [progressEmbed] : [],
-          components: [],
-        });
-      } catch (e) {
-        console.error('[Attendance] Could not update ephemeral reply after timeout:', e);
-      }
-    }, durationMs);
-  };
-
-  const timer = scheduleTimer(15_000);
+  const timer = scheduleConfirmationTimer(sessionKey, interaction, 15_000);
 
   pendingConfirmations.set(sessionKey, {
     movieId: movie.id,
@@ -170,25 +174,7 @@ export async function handleAttendeeSelect(interaction: UserSelectMenuInteractio
 
   // Reset the timer to give the admin 20 seconds after editing
   clearTimeout(pending.timer);
-  pending.timer = setTimeout(async () => {
-    const current = pendingConfirmations.get(sessionKey);
-    if (!current || current.resolved) return;
-
-    current.resolved = true;
-    pendingConfirmations.delete(sessionKey);
-
-    const { count, progressEmbed } = await executeAttendanceConfirmation(current, interaction.client);
-    try {
-      await interaction.editReply({
-        content: `✅ **Confirmation completed.**\nConfirmed **${count}** attendees! Rating requests dispatched.\n\n` +
-          `📊 *Live status below updates in real-time as reviews roll in:*`,
-        embeds: progressEmbed ? [progressEmbed] : [],
-        components: [],
-      });
-    } catch (e) {
-      console.error('[Attendance] Could not update ephemeral reply after timeout:', e);
-    }
-  }, 20_000);
+  pending.timer = scheduleConfirmationTimer(sessionKey, interaction, 20_000);
 
   const updatedList = Array.from(pending.attendees.keys()).map(id => `<@${id}>`).join(', ') || '_No attendees selected_';
 

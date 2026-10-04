@@ -17,11 +17,22 @@ import {
   addMovieToBacklog,
   getActiveMovieForRating,
   updateMovieSuggester,
+  deleteMovie,
 } from '../services/movie.service.js';
 import { detectPotentialAttendees } from '../services/attendance.service.js';
 import { getRatingProgress, finalizeMovieRatings } from '../services/rating.service.js';
 import { startAttendanceConfirmation } from '../components/attendanceModal.js';
-import { buildMovieEmbed, buildRevealEmbed, buildUserStatsEmbed, buildScheduleEmbed, buildRatingProgressEmbed, formatRuntime, resolveMovieChannel } from '../utils/discordHelpers.js';
+import {
+  buildMovieEmbed,
+  buildRevealEmbed,
+  buildUserStatsEmbed,
+  buildScheduleEmbed,
+  buildRatingProgressEmbed,
+  formatRuntime,
+  resolveMovieChannel,
+  disableMessageComponents,
+  getInteractionDisplayName,
+} from '../utils/discordHelpers.js';
 import { extractImdbId, findByImdbId, getMovieDetails, searchMovies } from '../services/tmdb.service.js';
 import { getLatestSchedulingSession, updateSessionPlannedMovie, getSessionVotes } from '../services/schedule.service.js';
 import { syncDiscordEvent } from '../services/discordEvent.service.js';
@@ -165,6 +176,18 @@ export const movieCommand = {
             .setDescription('Filter by user who suggested the movie')
             .setRequired(false)
         )
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName('delete')
+        .setDescription('Permanently delete a movie entry from backlog or watch history (Admin only)')
+        .addStringOption(opt =>
+          opt
+            .setName('movie')
+            .setDescription('Select the movie to delete')
+            .setRequired(true)
+            .setAutocomplete(true)
+        )
     ),
 
   async autocomplete(interaction: AutocompleteInteraction) {
@@ -216,15 +239,18 @@ export const movieCommand = {
       return;
     }
 
-    if (subcommand === 'set-suggester') {
-      const searchVal = focusedValue.toLowerCase();
+    if (subcommand === 'set-suggester' || subcommand === 'delete') {
+      const searchVal = focusedValue.trim().toLowerCase();
       const allMovies = await db
         .select()
         .from(movies)
         .orderBy(desc(movies.createdAt));
 
       const filtered = allMovies.filter(m =>
-        m.title.toLowerCase().includes(searchVal) || (m.releaseYear && String(m.releaseYear).includes(searchVal))
+        m.title.toLowerCase().includes(searchVal) ||
+        (m.releaseYear && String(m.releaseYear).includes(searchVal)) ||
+        String(m.id) === searchVal ||
+        `#${m.id}` === searchVal
       );
 
       const choices = filtered.slice(0, 25).map(m => ({
@@ -268,10 +294,7 @@ export const movieCommand = {
         }
 
         if (details) {
-          const userName = interaction.member && 'displayName' in interaction.member
-            ? (interaction.member.displayName as string)
-            : interaction.user.username;
-
+          const userName = getInteractionDisplayName(interaction);
           const addResult = await addMovieToBacklog(details, interaction.user.id, userName, true);
           targetMovieId = addResult.movie.id;
         }
@@ -648,9 +671,9 @@ export const movieCommand = {
       let creditedUsername = creditedUser.username;
       if (interaction.guild && targetUser) {
         const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
-        if (member?.displayName) creditedUsername = member.displayName;
-      } else if (interaction.member && 'displayName' in interaction.member) {
-        creditedUsername = interaction.member.displayName as string;
+        creditedUsername = member?.displayName || targetUser.displayName || targetUser.username;
+      } else {
+        creditedUsername = getInteractionDisplayName(interaction);
       }
 
       const result = await addMovieToBacklog(details, creditedUser.id, creditedUsername, allowRewatch);
@@ -725,6 +748,72 @@ export const movieCommand = {
       await interaction.reply({
         content: `✅ Successfully reassigned suggester for **${updateResult.movie.title}** to <@${targetUser.id}>.`,
         embeds: [embed],
+      });
+      return;
+    }
+
+    if (subcommand === 'delete') {
+      if (!isUserAdmin(interaction)) {
+        await interaction.reply({
+          content: '❌ Only administrators can delete movie entries from the database.',
+          ephemeral: true,
+        });
+        return;
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const input = interaction.options.getString('movie', true).trim();
+      let movieId = parseInt(input, 10);
+
+      // If user typed title rather than picking autocomplete ID
+      if (isNaN(movieId)) {
+        const match = await db
+          .select()
+          .from(movies)
+          .where(sql`lower(${movies.title}) = lower(${input})`)
+          .limit(1);
+
+        if (match.length === 0) {
+          await interaction.editReply({
+            content: `❌ Could not find a movie matching "${input}". Please select from the autocomplete list.`,
+          });
+          return;
+        }
+        movieId = match[0].id;
+      }
+
+      const result = await deleteMovie(movieId);
+      if (!result.success || !result.movie) {
+        await interaction.editReply({
+          content: `❌ ${result.error || 'Failed to delete movie.'}`,
+        });
+        return;
+      }
+
+      // If there was an active live rating message in a channel, clean up its components
+      await disableMessageComponents(
+        interaction.client,
+        result.movie.ratingChannelId,
+        result.movie.ratingMessageId,
+        `⚠️ *The rating session for **${result.movie.title}** was cancelled because the movie entry was deleted by an administrator.*`
+      );
+
+      const statusTag = result.movie.status.toUpperCase();
+      let details = `🗑️ **Successfully Deleted Movie Entry**\n\n• **Title**: ${result.movie.title} (${result.movie.releaseYear || 'N/A'})\n• **Previous Status**: \`${statusTag}\`\n• **Purged Ratings**: ${result.deletedRatingsCount}\n• **Purged Attendance Records**: ${result.deletedAttendanceCount}`;
+
+      if (result.unlinkedSchedulingSession) {
+        details += `\n• **Scheduling Session**: Unlinked from planned schedule`;
+      }
+
+      if (result.movie.status === 'planned') {
+        details += `\n\n⚠️ *Notice: This was the currently planned feature. You may want to run \`/movie set\` to assign a replacement.*`;
+      } else if (result.movie.status === 'watched') {
+        details += `\n\n✨ *Leaderboard and member recommendation statistics have been updated automatically.*`;
+      }
+
+      await interaction.editReply({
+        content: details,
       });
       return;
     }

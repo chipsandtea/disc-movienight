@@ -60,9 +60,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     // 2. Autocomplete
     if (interaction.isAutocomplete()) {
       const command = commandMap.get(interaction.commandName);
-      if (command && 'autocomplete' in command && typeof command.autocomplete === 'function') {
-        await command.autocomplete(interaction);
-      }
+      await command?.autocomplete?.(interaction);
       return;
     }
 
@@ -104,7 +102,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         return;
       }
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[Interaction] Error while processing interaction:', err);
 
     if (interaction.isRepliable()) {
